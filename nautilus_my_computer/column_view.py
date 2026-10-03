@@ -38,6 +38,7 @@ from nautilus_my_computer.context_menu import (
 )
 from nautilus_my_computer.widgets import (
     MyComputerColumn,
+    MyComputerColumnRow,
     MyComputerPreviewColumn,
     MyComputerToggleButton,
 )
@@ -591,6 +592,10 @@ class _ColumnViewHost:
         # _on_real_row_activated).
         return [self._make_real_column(self._root_uri)]
 
+    def _on_files_dropped(self, uris: list[str], destination_uri: str, move: bool) -> None:
+        # No on_started: a drop must leave the clipboard untouched.
+        self._dispatch_copy_move(uris, destination_uri, move=move)
+
     def _make_real_column(self, folder_uri: str) -> Gtk.Widget:
         column = MyComputerColumn(
             self._ext,
@@ -600,7 +605,11 @@ class _ColumnViewHost:
             sort=self._sort,
             on_row_pressed=self._on_row_pressed,
             on_row_released=self._on_row_released,
+            on_files_dropped=self._on_files_dropped,
         )
+        left_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        left_click.connect("released", self._on_column_background_clicked, column)
+        column.add_controller(left_click)
         right_click = Gtk.GestureClick(button=3)
         right_click.connect("pressed", self._on_column_background_right_clicked, column)
         column.add_controller(right_click)
@@ -649,6 +658,26 @@ class _ColumnViewHost:
             return
         self._focus_child_column()
 
+    def _select_all_in_column(self, column) -> None:
+        if column.item_count() == 0:
+            return
+        self._cancel_row_commit()
+        column.select_all()
+
+    def _on_column_background_clicked(
+        self, gesture: Gtk.GestureClick, _n_press: int, x: float, y: float, column
+    ) -> None:
+        """A plain click on the empty area of a column clears its selection."""
+        if column.selection_count() == 0:
+            return
+        widget = column.pick(x, y, Gtk.PickFlags.DEFAULT)
+        while widget is not None and widget is not column:
+            if isinstance(widget, (MyComputerColumnRow, Gtk.Scrollbar)):
+                return
+            widget = widget.get_parent()
+        self._cancel_row_commit()
+        column.clear_selection()
+
     def _on_column_background_right_clicked(
         self,
         gesture: Gtk.GestureClick,
@@ -675,7 +704,8 @@ class _ColumnViewHost:
             background_clipboard_section(
                 paste_action=(lambda: self._paste_into_folder(uri))
                 if self._clipboard_has_pasteable_files()
-                else None
+                else None,
+                select_all_action=lambda: self._select_all_in_column(column),
             ),
         ]
         terminal_action = self._terminal_action(uri)
@@ -901,7 +931,20 @@ class _ColumnViewHost:
             # into the next press (see _on_row_pressed's DENIED branch).
             gesture.set_state(Gtk.EventSequenceState.DENIED)
             return
+        state = gesture.get_current_event_state()
+        ctrl = bool(state & Gdk.ModifierType.CONTROL_MASK)
+        shift = bool(state & Gdk.ModifierType.SHIFT_MASK)
+        if ctrl or shift:
+            # Selection mode (#178): Ctrl toggles one row, Shift selects from
+            # the last clicked row. Applied by ColumnSelection, not by GTK,
+            # because GTK's own anchor never sees our claimed clicks. No
+            # activation, so nothing drills in or opens a column.
+            gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            column.modifier_click(row.item, ctrl=ctrl, shift=shift)
+            return
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        # A plain click ends any Ctrl/Shift multi-selection: only this row stays.
+        column.select_only_item(row.item)
         column._on_row_activated_internal(row)
 
     def _on_row_right_clicked(
@@ -925,6 +968,10 @@ class _ColumnViewHost:
         # state; it must not become the Miller column's blue :selected row.
         components.set_row_active(row.row_node(), True)
         uri = row.uri
+        # A row inside a multi-selection acts for the whole selection; any
+        # other row acts alone and leaves the committed selection untouched.
+        in_multi = column.selection_count() > 1 and column.is_item_selected(row.item)
+        targets = column.selected_uris() if in_multi else [uri]
         content_type = row.content_type or "application/octet-stream"
         default_app = Gio.AppInfo.get_default_for_type(content_type, False)
         open_with_template = _native("Open With %s")
@@ -964,23 +1011,23 @@ class _ColumnViewHost:
         sections = [
             open_actions,
             clipboard_actions_section(
-                cut_action=lambda: self._copy_to_clipboard(uri, cut=True),
-                copy_action=lambda: self._copy_to_clipboard(uri, cut=False),
+                cut_action=lambda: self._copy_to_clipboard(targets, cut=True),
+                copy_action=lambda: self._copy_to_clipboard(targets, cut=False),
                 paste_action=(lambda: self._paste_into_folder(uri))
                 if self._clipboard_has_pasteable_files()
                 else None,
-                move_to_action=lambda: self._show_destination_picker(uri, move=True),
-                copy_to_action=lambda: self._show_destination_picker(uri, move=False),
+                move_to_action=lambda: self._show_destination_picker(targets, move=True),
+                copy_to_action=lambda: self._show_destination_picker(targets, move=False),
             ),
             file_actions_section(
                 rename_action=(
                     (lambda: self._show_rename_popover(column, row))
-                    if uri.startswith("file://")
+                    if uri.startswith("file://") and len(targets) == 1
                     else None
                 ),
                 move_to_trash_action=(
-                    (lambda: self._move_to_trash(column, uri))
-                    if uri.startswith("file://")
+                    (lambda: self._move_to_trash(column, targets))
+                    if all(t.startswith("file://") for t in targets)
                     else None
                 ),
                 show_compress=True,
@@ -1050,30 +1097,27 @@ class _ColumnViewHost:
             item_kind="folder" if row.is_dir else "file",
         )
 
-    def _move_to_trash(self, source_column: Gtk.Widget, uri: str) -> None:
+    def _move_to_trash(self, source_column: Gtk.Widget, uris: list[str]) -> None:
         """Run Nautilus's own trash operation, including its undo manager."""
-        parent = Gio.File.new_for_uri(uri).get_parent()
-        if parent is not None:
-            self._watch_operation_directories([parent.get_uri()])
-        self._call_nautilus_file_operation("TrashURIs", GLib.Variant("(asa{sv})", ([uri], {})), uri)
+        parents = []
+        for uri in uris:
+            parent = Gio.File.new_for_uri(uri).get_parent()
+            if parent is not None:
+                parents.append(parent.get_uri())
+        if parents:
+            self._watch_operation_directories(parents)
+        self._call_nautilus_file_operation(
+            "TrashURIs", GLib.Variant("(asa{sv})", (uris, {})), uris[0]
+        )
 
     def _call_nautilus_file_operation(
         self, method: str, parameters: GLib.Variant, uri: str, *, on_started=None
     ) -> None:
-        """Start a native Nautilus file operation through its session D-Bus API."""
-        try:
-            operations = Gio.DBusProxy.new_for_bus_sync(
-                Gio.BusType.SESSION,
-                Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES,
-                None,
-                "org.gnome.Nautilus",
-                "/org/gnome/Nautilus/FileOperations2",
-                "org.gnome.Nautilus.FileOperations2",
-                None,
-            )
-        except GLib.Error as error:
-            _log(f"Could not start Nautilus trash operation for {uri!r}: {error.message}")
-            return
+        """Start a native Nautilus file operation through its session D-Bus API.
+
+        Proxy creation and the call are both async: a sync bus round trip in an
+        event handler can stall the Nautilus main loop under I/O load.
+        """
 
         def on_operation_started(proxy, result, _data) -> None:
             try:
@@ -1084,30 +1128,48 @@ class _ColumnViewHost:
             if callable(on_started):
                 on_started()
 
-        operations.call(
-            method,
-            parameters,
-            Gio.DBusCallFlags.NONE,
-            -1,
+        def on_proxy_ready(_source, result, _data) -> None:
+            try:
+                operations = Gio.DBusProxy.new_for_bus_finish(result)
+            except GLib.Error as error:
+                _log(f"Could not start Nautilus {method} for {uri!r}: {error.message}")
+                return
+            operations.call(
+                method,
+                parameters,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+                on_operation_started,
+                None,
+            )
+
+        Gio.DBusProxy.new_for_bus(
+            Gio.BusType.SESSION,
+            Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES,
             None,
-            on_operation_started,
+            "org.gnome.Nautilus",
+            "/org/gnome/Nautilus/FileOperations2",
+            "org.gnome.Nautilus.FileOperations2",
+            None,
+            on_proxy_ready,
             None,
         )
 
-    def _copy_to_clipboard(self, uri: str, *, cut: bool) -> None:
-        """Publish one Miller item as standard and Nautilus clipboard data."""
-        file_list = Gdk.FileList.new_from_list([Gio.File.new_for_uri(uri)])
+    def _copy_to_clipboard(self, uris: list[str], *, cut: bool) -> None:
+        """Publish Miller items as standard and Nautilus clipboard data."""
+        file_list = Gdk.FileList.new_from_list([Gio.File.new_for_uri(u) for u in uris])
         value = GObject.Value()
         value.init(Gdk.FileList)
         value.set_boxed(file_list)
         file_provider = Gdk.ContentProvider.new_for_value(value)
-        nautilus_data = f"{'cut' if cut else 'copy'}\n{uri}".encode()
+        nautilus_data = "\n".join(["cut" if cut else "copy", *uris]).encode()
         nautilus_provider = Gdk.ContentProvider.new_for_bytes(
             "x-special/gnome-copied-files", GLib.Bytes.new(nautilus_data)
         )
         provider = Gdk.ContentProvider.new_union([file_provider, nautilus_provider])
         self._clipboard.set_content(provider)
-        self._set_miller_clipboard_state([uri], cut=cut)
+        self._set_miller_clipboard_state(list(uris), cut=cut)
 
     def _open_file(self, uri: str) -> None:
         """Launch a file with its default application."""
@@ -1208,6 +1270,17 @@ class _ColumnViewHost:
     def _paste_uris_into_folder(
         self, source_uris: list[str], destination_uri: str, *, cut: bool
     ) -> None:
+        """Submit a paste; Nautilus accepting it releases the clipboard."""
+        self._dispatch_copy_move(
+            source_uris,
+            destination_uri,
+            move=cut,
+            on_started=self._clear_clipboard_after_paste,
+        )
+
+    def _dispatch_copy_move(
+        self, source_uris: list[str], destination_uri: str, *, move: bool, on_started=None
+    ) -> None:
         """Submit a resolved Copy/Move operation and refresh affected columns."""
         source_parents = []
         for source_uri in source_uris:
@@ -1215,13 +1288,10 @@ class _ColumnViewHost:
             if parent is not None:
                 source_parents.append(parent.get_uri())
         self._watch_operation_directories([*source_parents, destination_uri])
-        method = "MoveURIs" if cut else "CopyURIs"
+        method = "MoveURIs" if move else "CopyURIs"
         parameters = GLib.Variant("(assa{sv})", (source_uris, destination_uri, {}))
         self._call_nautilus_file_operation(
-            method,
-            parameters,
-            destination_uri,
-            on_started=self._clear_clipboard_after_paste,
+            method, parameters, destination_uri, on_started=on_started
         )
 
     def _clear_clipboard_after_paste(self) -> None:
@@ -1266,30 +1336,23 @@ class _ColumnViewHost:
             monitors.append(monitor)
             self._operation_monitors.append(monitor)
 
-    def _show_destination_picker(self, uri: str, *, move: bool) -> None:
+    def _show_destination_picker(self, uris: list[str], *, move: bool) -> None:
         """Choose a destination folder in Nautilus's modal native file dialog."""
         dialog = Gtk.FileDialog()
         dialog.set_title(
             _native("Select Move Destination") if move else _native("Select Copy Destination")
         )
         dialog.set_accept_label(_("Select"))
-        dialog.set_initial_folder(Gio.File.new_for_uri(uri).get_parent())
+        dialog.set_initial_folder(Gio.File.new_for_uri(uris[0]).get_parent())
 
         def on_destination_selected(source, result, _data) -> None:
             try:
                 destination = source.select_folder_finish(result)
             except GLib.Error as error:
                 if not error.matches(Gtk.DialogError, Gtk.DialogError.DISMISSED):
-                    _log(f"Could not select destination for {uri!r}: {error.message}")
+                    _log(f"Could not select destination for {uris[0]!r}: {error.message}")
                 return
-            method = "MoveURIs" if move else "CopyURIs"
-            parameters = GLib.Variant("(assa{sv})", ([uri], destination.get_uri(), {}))
-            source_parent = Gio.File.new_for_uri(uri).get_parent()
-            watch_uris = [destination.get_uri()]
-            if source_parent is not None:
-                watch_uris.append(source_parent.get_uri())
-            self._watch_operation_directories(watch_uris)
-            self._call_nautilus_file_operation(method, parameters, uri)
+            self._dispatch_copy_move(uris, destination.get_uri(), move=move)
 
         dialog.select_folder(self._win, None, on_destination_selected, None)
 
@@ -1302,19 +1365,28 @@ class _ColumnViewHost:
     def trash_focused_folder(self) -> bool:
         """Move the focused local Miller item to trash (the Delete target)."""
         column = self._focused_column()
-        item = column.selected_item() if column is not None else None
-        if item is None or not item.uri.startswith("file://"):
+        uris = column.selected_uris() if column is not None else []
+        if not uris or not all(uri.startswith("file://") for uri in uris):
             return False
-        self._move_to_trash(column, item.uri)
+        self._move_to_trash(column, uris)
         return True
 
     def copy_focused_folder_to_clipboard(self, *, cut: bool) -> bool:
         """Copy or cut the focused Miller item (the Ctrl+X/Ctrl+C targets)."""
         column = self._focused_column()
-        item = column.selected_item() if column is not None else None
-        if item is None:
+        uris = column.selected_uris() if column is not None else []
+        if not uris:
             return False
-        self._copy_to_clipboard(item.uri, cut=cut)
+        self._copy_to_clipboard(uris, cut=cut)
+        return True
+
+    def select_all_in_focused_column(self) -> bool:
+        """Select every row of the focused Miller column (the Ctrl+A target)."""
+        column = self._focused_column()
+        if column is None or column.item_count() == 0:
+            return False
+        self._cancel_row_commit()
+        column.select_all()
         return True
 
     def paste_into_focused_folder(self) -> bool:
@@ -1335,7 +1407,7 @@ class _ColumnViewHost:
         unrealized, then opens the popover once the row has actually bound."""
         column = self._focused_column()
         item = column.selected_item() if column is not None else None
-        if item is None or not item.uri.startswith("file://"):
+        if item is None or column.selection_count() > 1 or not item.uri.startswith("file://"):
             return False
         return column.with_selected_row(lambda row: self._show_rename_popover(column, row))
 
@@ -1648,6 +1720,10 @@ class _ColumnViewHost:
         including ones the click didn't touch, means a stale selection from
         a since-abandoned branch can never linger."""
         for i, col in enumerate(self.columns):
+            if i == self.focused_index and col.selection_count() > 1:
+                # A Ctrl/Shift multi-selection (#178) is the user's own choice,
+                # not a stale branch: leave it until the next plain click.
+                continue
             if i + 1 < len(self.columns):
                 col.select_child_for_uri(self.columns[i + 1].folder_uri)
             elif self.preview_column.file_uri:
@@ -2608,6 +2684,12 @@ def paste_into_focused_folder(ext, win: Gtk.Window) -> bool:
     """Dispatch Ctrl+V to the active slot's Miller host."""
     host = _host_for_window(ext, win)
     return host.paste_into_focused_folder() if host is not None else False
+
+
+def select_all_in_focused_column(ext, win: Gtk.Window) -> bool:
+    """Dispatch Ctrl+A to the active slot's Miller host."""
+    host = _host_for_window(ext, win)
+    return host.select_all_in_focused_column() if host is not None else False
 
 
 def create_folder_in_focused_column(ext, win: Gtk.Window) -> bool:

@@ -11,6 +11,7 @@ through the injected `ext` instance.
 import collections
 import dataclasses
 import math
+import os
 import threading
 
 import cairo
@@ -46,6 +47,10 @@ except (ValueError, ImportError):
 # thumbnails (see MyComputerColumnRow._row_thumbnail_worker) -- a folder with
 # hundreds of un-cached files would otherwise launch that many subprocesses
 # at once.
+# Matches Nautilus's own HOVER_TIMEOUT: how long a drag must rest over a folder
+# row before that folder opens as the next column.
+DND_HOVER_OPEN_MS = 500
+
 _ROW_THUMBNAIL_SEMAPHORE = threading.Semaphore(4)
 
 # Reparenting a column's ListView can make GTK unbind and immediately bind all
@@ -140,6 +145,7 @@ from nautilus_my_computer.common import (
     _resolve_custom_gicon,
     _set_regular_icon,
 )
+from nautilus_my_computer.components import set_row_active
 
 
 class MyComputerDiskCard(Gtk.Box):
@@ -1123,6 +1129,50 @@ class _ColumnRowItem(GObject.Object):
         self.is_cut = False
 
 
+def _droppable_uris(uris: list[str], destination_uri: str, *, is_move: bool) -> list[str]:
+    """Drop the sources a drop into destination_uri cannot sensibly act on:
+    the destination itself, a destination inside a source, and (moves only) a
+    source already sitting directly in the destination. Compared through
+    Gio.File so URI encoding and trailing slashes normalize like GVfs does."""
+    destination = Gio.File.new_for_uri(destination_uri)
+    kept = []
+    for uri in uris:
+        source = Gio.File.new_for_uri(uri)
+        if source.equal(destination) or destination.has_prefix(source):
+            continue
+        if is_move:
+            parent = source.get_parent()
+            if parent is not None and parent.equal(destination):
+                continue
+        kept.append(uri)
+    return kept
+
+
+def _preferred_move(uris: list[str], destination_uri: str) -> bool:
+    """Mirror nautilus_dnd_get_preferred_action: trash sources and sources on
+    the destination's filesystem move, everything else copies. Only local
+    file:// paths are stat'd (cheap); any other scheme copies."""
+    dest = Gio.File.new_for_uri(destination_uri).get_path()
+    if dest is None:
+        return False
+    try:
+        dest_dev = os.stat(dest).st_dev
+    except OSError:
+        return False
+    for uri in uris:
+        if uri.startswith("trash:"):
+            continue
+        path = Gio.File.new_for_uri(uri).get_path()
+        if path is None:
+            return False
+        try:
+            if os.stat(path).st_dev != dest_dev or not os.access(os.path.dirname(path), os.W_OK):
+                return False
+        except OSError:
+            return False
+    return True
+
+
 class MyComputerColumnRow(Gtk.Box):
     """One recyclable Gtk.ListView row widget for a Column View column: icon,
     name, and a trailing chevron for folders (visual affordance that
@@ -1646,6 +1696,91 @@ _SORT_KEY_BUILDERS = {
 }
 
 
+class ColumnSelection:
+    """Selection state of one Miller column: the Gtk.MultiSelection over its
+    row store plus the anchor row single-item callers read. Every selection
+    change in a column goes through this object (clear, select only one row,
+    select all, read back positions/items/uris), so Ctrl/Shift multi-selection
+    (#178) and drag and drop (#154) share one set of rules."""
+
+    def __init__(self, store: Gio.ListStore) -> None:
+        self._store = store
+        self.model = Gtk.MultiSelection(model=store)
+        self.anchor: int | None = None
+        # Where a Shift-click range starts: the last row clicked or moved to.
+        # Kept here because our press/release dispatch claims the click, so
+        # GtkListItemWidget never records one of its own.
+        self.click_anchor: int | None = None
+        self.model.connect("selection-changed", self._on_changed)
+
+    def _on_changed(self, model, position: int, n_items: int) -> None:
+        if n_items == 1 and model.is_selected(position):
+            self.anchor = position
+
+    def positions(self) -> list[int]:
+        bitset = self.model.get_selection()
+        return [bitset.get_nth(i) for i in range(bitset.get_size())]
+
+    def items(self) -> list["_ColumnRowItem"]:
+        return [self._store.get_item(i) for i in self.positions()]
+
+    def uris(self) -> list[str]:
+        return [item.uri for item in self.items()]
+
+    def count(self) -> int:
+        return self.model.get_selection().get_size()
+
+    def contains(self, item) -> bool:
+        return any(item is other for other in self.items())
+
+    def clear(self) -> None:
+        self.model.unselect_all()
+
+    def select_all(self) -> None:
+        self.model.select_all()
+
+    def select_only(self, position: int) -> None:
+        """Select exactly one row, dropping every other selected row."""
+        self.model.select_item(position, True)
+        self.click_anchor = position
+
+    def toggle(self, position: int) -> None:
+        """Ctrl-click: add or remove one row, leaving the rest alone."""
+        if self.model.is_selected(position):
+            self.model.unselect_item(position)
+        else:
+            self.model.select_item(position, False)
+        self.click_anchor = position
+
+    def select_range_to(self, position: int, *, extend: bool) -> None:
+        """Shift-click: select from the click anchor to this row. Without
+        extend (Ctrl+Shift) every row outside the range is unselected."""
+        anchor = self.click_anchor if self.click_anchor is not None else position
+        lo, hi = min(anchor, position), max(anchor, position)
+        self.model.select_range(lo, hi - lo + 1, not extend)
+
+    def modifier_click(self, item, *, ctrl: bool, shift: bool) -> None:
+        found, position = self._store.find(item)
+        if not found:
+            return
+        if shift:
+            self.select_range_to(position, extend=ctrl)
+        else:
+            self.toggle(position)
+
+    def select_only_item(self, item) -> None:
+        found, position = self._store.find(item)
+        if found:
+            self.select_only(position)
+
+    def primary(self) -> int | None:
+        """The anchor row's position (the only one when one row is selected)."""
+        positions = self.positions()
+        if not positions:
+            return None
+        return self.anchor if self.anchor in positions else positions[0]
+
+
 class MyComputerColumn(Gtk.ScrolledWindow):
     """One fixed-width Miller column: lists the contents of a single folder.
 
@@ -1665,10 +1800,16 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         sort: tuple[str, bool] = ("name", False),
         on_row_pressed=None,
         on_row_released=None,
+        on_files_dropped=None,
     ) -> None:
         super().__init__()
         self._ext = ext
         self.folder_uri = folder_uri
+        # on_files_dropped(uris, destination_uri, move) runs after a drop on a
+        # folder row or this column's background has been filtered.
+        self._on_files_dropped = on_files_dropped
+        self._hover_timer = 0
+        self._hover_row: MyComputerColumnRow | None = None
         self._on_row_activated = on_row_activated
         self._on_loaded = on_loaded
         self._sort = sort
@@ -1730,9 +1871,13 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         # it is not (see page_step, which derives the visible count from the
         # adjustment instead).
         self._store: Gio.ListStore = Gio.ListStore(item_type=_ColumnRowItem)
-        self._selection = Gtk.SingleSelection(
-            model=self._store, autoselect=False, can_unselect=True
-        )
+        # Multi-selection (#178): Ctrl-click toggles one row and Shift-click
+        # extends from the last clicked row, both applied by GtkListItemWidget
+        # itself, as in native Nautilus. The single-item API below
+        # (selected_item and friends) reads the anchor row, so callers that
+        # only ever deal with one file keep working unchanged.
+        self._selection_state = ColumnSelection(self._store)
+        self._selection = self._selection_state.model
         self._row_widgets: dict[int, MyComputerColumnRow] = {}
 
         factory = Gtk.SignalListItemFactory()
@@ -1793,6 +1938,11 @@ class MyComputerColumn(Gtk.ScrolledWindow):
 
         self.set_child(self.list_view)
 
+        background_drop = self._new_drop_target()
+        background_drop.connect("motion", self._on_background_drop_motion)
+        background_drop.connect("drop", self._on_background_drop)
+        self.add_controller(background_drop)
+
         self._load()
 
     def _show_empty_page(self, empty: bool) -> None:
@@ -1819,6 +1969,143 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         click.connect("pressed", self._on_row_widget_pressed, row)
         click.connect("released", self._on_row_widget_released, row)
         row.add_controller(click)
+
+        # CAPTURE like nautilus-list-base.c, so a drag is not shadowed by the
+        # click gesture. The press stays unclaimed (#161), so a plain click
+        # still reaches _on_row_widget_released.
+        drag = Gtk.DragSource()
+        drag.set_actions(Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
+        drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        drag.connect("prepare", self._on_row_drag_prepare, row)
+        drag.connect("drag-begin", self._on_row_drag_begin, row)
+        row.add_controller(drag)
+
+        row_drop = self._new_drop_target()
+        row_drop.connect("accept", lambda _t, _d: row.is_dir)
+        row_drop.connect("motion", self._on_row_drop_motion, row)
+        row_drop.connect("leave", self._on_row_drop_leave, row)
+        row_drop.connect("drop", self._on_row_drop, row)
+        row.add_controller(row_drop)
+
+    @staticmethod
+    def _new_drop_target() -> Gtk.DropTarget:
+        target = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
+        target.set_preload(True)
+        return target
+
+    @staticmethod
+    def _dropped_uris(value) -> list[str]:
+        try:
+            return [f.get_uri() for f in value.get_files()]
+        except (AttributeError, TypeError):
+            return []
+
+    def _drop_action(self, target: Gtk.DropTarget, destination_uri: str) -> Gdk.DragAction:
+        """Action the pointer currently offers, 0 when nothing can be dropped.
+        Ctrl/Shift reach us as a drag restricted to COPY/MOVE; otherwise the
+        native preferred action decides."""
+        value = target.get_value()
+        uris = self._dropped_uris(value) if value is not None else []
+        drop = target.get_current_drop()
+        if not uris or drop is None:
+            return 0
+        offered = drop.get_actions() & (Gdk.DragAction.COPY | Gdk.DragAction.MOVE)
+        if offered == Gdk.DragAction.COPY or offered == Gdk.DragAction.MOVE:
+            action = offered
+        else:
+            move = _preferred_move(uris, destination_uri)
+            action = Gdk.DragAction.MOVE if move else Gdk.DragAction.COPY
+        if not _droppable_uris(uris, destination_uri, is_move=action == Gdk.DragAction.MOVE):
+            return 0
+        path = Gio.File.new_for_uri(destination_uri).get_path()
+        if path is not None and not os.access(path, os.W_OK):
+            return 0
+        return action
+
+    def _finish_drop(self, target: Gtk.DropTarget, value, destination_uri: str) -> bool:
+        action = self._drop_action(target, destination_uri)
+        if not action or self._on_files_dropped is None:
+            return False
+        move = action == Gdk.DragAction.MOVE
+        uris = _droppable_uris(self._dropped_uris(value), destination_uri, is_move=move)
+        if not uris:
+            return False
+        self._on_files_dropped(uris, destination_uri, move)
+        return True
+
+    def _on_row_drop_motion(self, target, _x, _y, row: "MyComputerColumnRow"):
+        uri = row.uri
+        action = self._drop_action(target, uri) if uri else 0
+        row_node = row.row_node()
+        if row_node is not None:
+            set_row_active(row_node, bool(action))
+        if action and self._ext._nautilus_prefs.open_folder_on_dnd_hover():
+            self._arm_hover_open(row)
+        else:
+            self._cancel_hover_open()
+        return action
+
+    def _on_row_drop_leave(self, _target, row: "MyComputerColumnRow") -> None:
+        row_node = row.row_node()
+        if row_node is not None:
+            set_row_active(row_node, False)
+        self._cancel_hover_open()
+
+    def _on_row_drop(self, target, value, _x, _y, row: "MyComputerColumnRow") -> bool:
+        self._on_row_drop_leave(target, row)
+        return bool(row.uri) and self._finish_drop(target, value, row.uri)
+
+    def _on_background_drop_motion(self, target, _x, _y):
+        return self._drop_action(target, self.folder_uri)
+
+    def _on_background_drop(self, target, value, _x, _y) -> bool:
+        return self._finish_drop(target, value, self.folder_uri)
+
+    def _arm_hover_open(self, row: "MyComputerColumnRow") -> None:
+        # Exception to the no-timers rule, approved for this constant only:
+        # native Nautilus uses the same one-shot HOVER_TIMEOUT.
+        if self._hover_row is row and self._hover_timer:
+            return
+        self._cancel_hover_open()
+        self._hover_row = row
+        self._hover_timer = GLib.timeout_add(DND_HOVER_OPEN_MS, self._on_hover_open)
+
+    def _cancel_hover_open(self) -> None:
+        if self._hover_timer:
+            GLib.source_remove(self._hover_timer)
+        self._hover_timer = 0
+        self._hover_row = None
+
+    def _on_hover_open(self) -> bool:
+        row = self._hover_row
+        self._hover_timer = 0
+        self._hover_row = None
+        if row is not None and row.is_dir:
+            self._on_row_activated_internal(row)
+        return GLib.SOURCE_REMOVE
+
+    def _on_row_drag_prepare(self, _source, _x, _y, row: "MyComputerColumnRow"):
+        # Read the item live: the recycled row may have been rebound since setup.
+        item = row.item
+        if item is None:
+            return None
+        uris = self.selected_uris() if self.is_item_selected(item) else [item.uri]
+        if not uris:
+            return None
+        file_list = Gdk.FileList.new_from_list([Gio.File.new_for_uri(u) for u in uris])
+        value = GObject.Value()
+        value.init(Gdk.FileList)
+        value.set_boxed(file_list)
+        text = "".join(f"{u}\r\n" for u in uris)
+        return Gdk.ContentProvider.new_union(
+            [
+                Gdk.ContentProvider.new_for_value(value),
+                Gdk.ContentProvider.new_for_bytes("text/uri-list", GLib.Bytes.new(text.encode())),
+            ]
+        )
+
+    def _on_row_drag_begin(self, source, _drag, row: "MyComputerColumnRow") -> None:
+        source.set_icon(Gtk.WidgetPaintable.new(row._icon_stack), 0, 0)
 
     def _on_row_widget_pressed(
         self,
@@ -2113,13 +2400,40 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         seeding the view from the current location's ancestor chain."""
         index = self._index_for_uri(uri)
         if index is not None:
-            self._selection.select_item(index, True)
+            self._selection_state.select_only(index)
+
+    def selected_positions(self) -> list[int]:
+        """Every selected position, ascending."""
+        return self._selection_state.positions()
+
+    def selected_items(self) -> list["_ColumnRowItem"]:
+        return self._selection_state.items()
+
+    def selected_uris(self) -> list[str]:
+        return self._selection_state.uris()
+
+    def selection_count(self) -> int:
+        return self._selection_state.count()
+
+    def is_item_selected(self, item) -> bool:
+        return self._selection_state.contains(item)
+
+    def select_all(self) -> None:
+        self._selection_state.select_all()
+
+    def modifier_click(self, item, *, ctrl: bool, shift: bool) -> None:
+        """Apply a Ctrl (toggle) or Shift (range from last click) click."""
+        self._selection_state.modifier_click(item, ctrl=ctrl, shift=shift)
+
+    def select_only_item(self, item) -> None:
+        """Drop any multi-selection and keep just this row selected."""
+        self._selection_state.select_only_item(item)
 
     def clear_selection(self) -> None:
         """Drop this column's own row selection -- used by column_view.py's
         _on_real_row_activated so only the row that led to the current
         column/preview stays highlighted, never an earlier column too."""
-        self._selection.unselect_all()
+        self._selection_state.clear()
 
     def select_index(self, index: int) -> "_ColumnRowItem | None":
         """Select this column's entry at index (clamped into range) and
@@ -2135,7 +2449,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         if n == 0:
             return None
         index = max(0, min(index, n - 1))
-        self._selection.select_item(index, True)
+        self._selection_state.select_only(index)
         return self._store.get_item(index)
 
     def select_first(self) -> "_ColumnRowItem | None":
@@ -2145,11 +2459,11 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         return self.select_index(0)
 
     def has_selection(self) -> bool:
-        return self._selection.get_selected_item() is not None
+        return self.selection_count() > 0
 
     def selected_index(self) -> int | None:
-        pos = self._selection.get_selected()
-        return None if pos == Gtk.INVALID_LIST_POSITION else pos
+        """The anchor row's position (the only one when one row is selected)."""
+        return self._selection_state.primary()
 
     def item_count(self) -> int:
         return self._store.get_n_items()
@@ -2261,7 +2575,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         GtkListView's recycling an item scrolled out of view has no widget at
         all, so a selection-driven shortcut keyed off the widget would
         silently do nothing purely because the user had scrolled away."""
-        return self._selection.get_selected_item()
+        index = self.selected_index()
+        return None if index is None else self._store.get_item(index)
 
     def selected_row(self) -> "MyComputerColumnRow | None":
         """The currently selected row's widget, if it is realized (scrolled
@@ -2269,7 +2584,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         live widget, per GtkListView's recycling model. Prefer
         selected_item() unless a real widget is genuinely required (only
         Rename is, as a popover anchor -- see with_selected_row)."""
-        item = self._selection.get_selected_item()
+        item = self.selected_item()
         if item is None:
             return None
         return self._row_widgets.get(id(item))
@@ -2283,8 +2598,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         wait is a bounded tick callback rather than one GLib.idle_add because
         the bind happens during the frame-clock layout that scroll_to
         schedules, which a single default-priority idle can still beat."""
-        position = self._selection.get_selected()
-        if position == Gtk.INVALID_LIST_POSITION:
+        position = self.selected_index()
+        if position is None:
             return False
         item = self._store.get_item(position)
         if item is None:

@@ -230,18 +230,27 @@ def background_creation_section(
     return ContextMenuSection(items)
 
 
-def background_clipboard_section(*, paste_action=None) -> ContextMenuSection:
+def background_clipboard_section(
+    *, paste_action=None, select_all_action=None
+) -> ContextMenuSection:
     """Build the folder-background clipboard section."""
-    return ContextMenuSection(
-        [
+    items = [
+        ContextMenuItem(
+            _native("Paste"),
+            action=paste_action,
+            shortcut="<Control>v",
+            enabled=callable(paste_action),
+        )
+    ]
+    if select_all_action is not None:
+        items.append(
             ContextMenuItem(
-                _native("Paste"),
-                action=paste_action,
-                shortcut="<Control>v",
-                enabled=callable(paste_action),
+                _native("Select All"),
+                action=select_all_action,
+                shortcut="<Control>a",
             )
-        ]
-    )
+        )
+    return ContextMenuSection(items)
 
 
 def background_terminal_section(*, open_terminal_action=None) -> ContextMenuSection:

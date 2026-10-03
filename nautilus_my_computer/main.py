@@ -562,6 +562,7 @@ _WINDOW_SHORTCUTS: dict[tuple[int, int], str] = {
     (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_x): "_cut_column_focused_folder",
     (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_c): "_copy_column_focused_folder",
     (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_v): "_paste_into_column_focused_folder",
+    (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_a): "_select_all_in_column_focused_folder",
     (
         int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK),
         Gdk.KEY_N,
@@ -1202,6 +1203,14 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         if isinstance(win.get_focus(), Gtk.Editable):
             return False
         return column_view.paste_into_focused_folder(self, win)
+
+    def _select_all_in_column_focused_folder(self, win: Gtk.Window) -> bool:
+        """Ctrl+A: select every row of the focused Miller column."""
+        if not self._active_slot_showing_column(win):
+            return False
+        if isinstance(win.get_focus(), Gtk.Editable):
+            return False
+        return column_view.select_all_in_focused_column(self, win)
 
     def _new_folder_in_column_focused_folder(self, win: Gtk.Window) -> bool:
         """Shift+Ctrl+N: create a folder in the focused Miller column."""

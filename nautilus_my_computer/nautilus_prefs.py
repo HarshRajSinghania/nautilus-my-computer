@@ -63,6 +63,9 @@ class NautilusPrefs:
     def hidden_files(self) -> bool:
         return self._filechooser.get_boolean("show-hidden")
 
+    def open_folder_on_dnd_hover(self) -> bool:
+        return self._prefs.get_boolean("open-folder-on-dnd-hover")
+
     def sort_directories_first(self) -> bool:
         """Nautilus Preferences > "Sort Folders Before Files". Lives in the
         same shared GTK4 file-chooser schema as show-hidden
