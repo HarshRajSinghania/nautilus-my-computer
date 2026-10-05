@@ -602,9 +602,30 @@ _CSS = b"""
    -- no dependency on any focus-grabbing. The class itself is toggled on
    the column's Gtk.ListView (see set_current_column), not the row -- it
    names the effect this rule produces, not the widget it's attached to. */
-.mc-column-list.navigation-sidebar.mc-column-view-highlighted-row row:selected {
-    background-color: @accent_bg_color;
+/* The selection fill is painted by our row content, not by Nautilus's row
+   node, so adjacent selected rows can drop their shared corners (Finder-style
+   blocks, see MyComputerColumn._apply_row_join). 6px is the sidebar row radius. */
+.mc-column-list > row:selected,
+.mc-column-list > row:selected:hover {
+    background-color: transparent;
+}
+.mc-column-list > row:selected > .mc-column-row-content {
+    background-color: alpha(currentColor, 0.1);
+    border-radius: 6px;
+}
+.mc-column-list > row:selected > .mc-column-row-content.mc-join-above {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+.mc-column-list > row:selected > .mc-column-row-content.mc-join-below {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.mc-column-list.mc-column-view-highlighted-row > row:selected {
     color: @accent_fg_color;
+}
+.mc-column-list.mc-column-view-highlighted-row > row:selected > .mc-column-row-content {
+    background-color: @accent_bg_color;
 }
 /* Grid/List/Column segmented switcher (see widgets.MyComputerToggleButton).
    Hand-built from Gtk.Box/Gtk.ToggleButton/Gtk.Separator, not Adw.ToggleGroup

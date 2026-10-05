@@ -1882,7 +1882,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         self._selection_state = ColumnSelection(self._store)
         self._selection = self._selection_state.model
         self._is_current = False
-        self._selection.connect("selection-changed", lambda *_args: self._refresh_accent())
+        self._selection.connect("selection-changed", lambda *_args: self._refresh_row_joins())
         self._row_widgets: dict[int, MyComputerColumnRow] = {}
 
         factory = Gtk.SignalListItemFactory()
@@ -2139,11 +2139,15 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         row: MyComputerColumnRow = list_item.get_child()
         row.bind(item)
         self._row_widgets[id(item)] = row
+        self._apply_row_join(row)
 
     def _on_factory_unbind(self, _factory, list_item: Gtk.ListItem) -> None:
         row: MyComputerColumnRow = list_item.get_child()
         if row.item is not None:
             self._row_widgets.pop(id(row.item), None)
+        # Never touch the parent here: unbind also runs while the column is
+        # being unparented (paned rebuild), and a half-disposed GtkListItemWidget
+        # segfaults. Bind recomputes both join classes, so stale ones self-heal.
         row.unbind()
 
     def _on_factory_teardown(self, _factory, list_item: Gtk.ListItem) -> None:
@@ -2550,11 +2554,37 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         self._is_current = is_current
         self._refresh_accent()
 
+    def _refresh_row_joins(self) -> None:
+        for row in self._row_widgets.values():
+            self._apply_row_join(row)
+
+    def _apply_row_join(self, row: "MyComputerColumnRow") -> None:
+        """Finder-style blocks: a selected row whose neighbour is also selected
+        loses the corner radius on that side, so a run of selected rows reads
+        as one block rounded only at its first and last row. The classes go on
+        our own row content, which paints the selection (see the
+        .mc-column-list rules in my_computer_view.py); Nautilus's
+        GtkListItemWidget is never touched, mutating it crashed on rebuilds."""
+        if row.item is None:
+            return
+        found, pos = self._store.find(row.item)
+        if not found:
+            return
+        sel = self._selection
+        selected = sel.is_selected(pos)
+        above = selected and pos > 0 and sel.is_selected(pos - 1)
+        below = selected and sel.is_selected(pos + 1)
+        for name, on in (("mc-join-above", above), ("mc-join-below", below)):
+            if on:
+                row.add_css_class(name)
+            else:
+                row.remove_css_class(name)
+
     def _refresh_accent(self) -> None:
-        """Accent is reserved for the single row that leads to the preview or
-        next column. A Ctrl/Shift multi-selection keeps the native grey
-        :selected, same as earlier columns on the path."""
-        if self._is_current and self._selection_state.count() <= 1:
+        """Accent marks the selection in the current column, single or
+        multiple rows, like Finder. Earlier columns on the path keep the
+        native grey :selected."""
+        if self._is_current:
             self.list_view.add_css_class("mc-column-view-highlighted-row")
         else:
             self.list_view.remove_css_class("mc-column-view-highlighted-row")
