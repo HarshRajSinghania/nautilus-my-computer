@@ -569,10 +569,13 @@ _CSS = b"""
    pre-#139-refactor. Move that inset into the Miller child box
    (.mc-column-row-content, see widgets.MyComputerColumnRow) so it fills the
    outer row allocation exactly, while its contents retain the native 8px
-   inset. */
+   inset. Rows also touch (no sidebar margin between them), like the native
+   list view, so a multi-selection reads as one continuous band. */
 .mc-column-list > row {
     padding-left: 0;
     padding-right: 0;
+    margin-top: 0;
+    margin-bottom: 0;
 }
 .mc-column-list > row > .mc-column-row-content {
     padding-left: 8px;
