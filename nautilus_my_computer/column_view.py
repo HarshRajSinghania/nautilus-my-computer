@@ -501,6 +501,9 @@ class _ColumnViewHost:
         # set_child() itself, synchronously -- available to read back right
         # after this call (confirmed: no need to wait for realize/map).
         scroller.set_child(aligner)
+        canvas_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
+        canvas_click.connect("released", self._on_canvas_clicked)
+        aligner.add_controller(canvas_click)
 
         # Nothing native derives a "line"/"row" size for us here (that's
         # normally what a GtkTextView/GtkListView reports) -- step-increment
@@ -607,6 +610,7 @@ class _ColumnViewHost:
             on_row_released=self._on_row_released,
             on_files_dropped=self._on_files_dropped,
         )
+        column.connect_selection_changed(lambda: self._schedule_multi_preview(column))
         left_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
         left_click.connect("released", self._on_column_background_clicked, column)
         column.add_controller(left_click)
@@ -614,6 +618,32 @@ class _ColumnViewHost:
         right_click.connect("pressed", self._on_column_background_right_clicked, column)
         column.add_controller(right_click)
         return column
+
+    def _schedule_multi_preview(self, column) -> None:
+        """Selection changes arrive in bursts (a plain click clears then
+        selects, Shift ranges fire several times), so the preview is reconciled
+        once on idle, after the click handler has finished."""
+        if getattr(self, "_multi_preview_idle", 0):
+            return
+        self._multi_preview_idle = GLib.idle_add(self._reconcile_multi_preview, column)
+
+    def _reconcile_multi_preview(self, column) -> bool:
+        self._multi_preview_idle = 0
+        if column not in self.columns or column is not self._focused_column():
+            return GLib.SOURCE_REMOVE
+        count = column.selection_count()
+        if count > 1:
+            index = self.columns.index(column)
+            for stale in self.columns[index + 1 :]:
+                stale.destroy_enumeration()
+            del self.columns[index + 1 :]
+            self._set_preview(None, uris=column.selected_uris())
+            self._rebuild_chain()
+        elif self.preview_column.is_multi:
+            # Back to zero or one row: the multi summary no longer applies.
+            self._set_preview(None)
+            self._replace_preview_in_chain()
+        return GLib.SOURCE_REMOVE
 
     def _on_column_loaded(self, column) -> None:
         """A freshly created column's enumerate_children_async just finished
@@ -676,7 +706,36 @@ class _ColumnViewHost:
                 return
             widget = widget.get_parent()
         self._cancel_row_commit()
+        self._clear_selection_keep_chain(column)
+
+    def _clear_selection_keep_chain(self, column) -> None:
+        """Drop the user's own selection in column, then re-derive every
+        column's committed-path highlight so the open chain stays visible."""
         column.clear_selection()
+        self._sync_column_selections()
+
+    def _on_canvas_clicked(
+        self, _gesture: Gtk.GestureClick, _n_press: int, x: float, y: float
+    ) -> None:
+        """A plain click anywhere that is not a row (preview column, empty
+        space after the last column, a column's blank area) clears the
+        focused column's selection. Rows, scrollbars and the paned resize
+        handles keep their own behaviour."""
+        column = self._focused_column()
+        if column is None or column.selection_count() == 0:
+            return
+        widget = self.aligner.pick(x, y, Gtk.PickFlags.DEFAULT)
+        # A pick landing on a Gtk.Paned itself is its resize handle; every
+        # content widget is a descendant of some paned, so only the picked
+        # widget (not its ancestors) is tested against it.
+        if isinstance(widget, Gtk.Paned):
+            return
+        while widget is not None and widget is not self.aligner:
+            if isinstance(widget, (MyComputerColumnRow, Gtk.Scrollbar)):
+                return
+            widget = widget.get_parent()
+        self._cancel_row_commit()
+        self._clear_selection_keep_chain(column)
 
     def _on_column_background_right_clicked(
         self,
@@ -1858,6 +1917,11 @@ class _ColumnViewHost:
         # through to the same swallow every other unclaimed key gets below,
         # rather than running the plain-key action.
         shift = bool(int(gtk_state) & Gdk.ModifierType.SHIFT_MASK)
+        if keyval == Gdk.KEY_Escape and column.selection_count() > 0:
+            # Unlike the native views, Esc clears the selection here.
+            self._cancel_row_commit()
+            self._clear_selection_keep_chain(column)
+            return True
         if not shift:
             if keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
                 return self._focus_parent_column()
@@ -2081,14 +2145,14 @@ class _ColumnViewHost:
         # time a file is clicked (see _set_preview).
         return MyComputerPreviewColumn(self._ext, None)
 
-    def _set_preview(self, file_uri: str | None) -> None:
+    def _set_preview(self, file_uri: str | None, uris: list[str] | None = None) -> None:
         # The preview is rebuilt (never updated in place) on every navigation:
         # cancel the old one's async work and swap in a fresh widget. The old
         # widget is detached from the paned chain by the next _rebuild_chain.
         old = self.preview_column
         if old is not None:
             old.destroy_enumeration()
-        self.preview_column = MyComputerPreviewColumn(self._ext, file_uri)
+        self.preview_column = MyComputerPreviewColumn(self._ext, file_uri, uris)
 
     def _rebuild_chain(self) -> None:
         old_root = getattr(self, "root", None)

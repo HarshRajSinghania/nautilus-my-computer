@@ -549,6 +549,16 @@ _CSS = b"""
 .mc-preview-image {
     border-radius: 12px;
 }
+/* Multi-selection stack preview: larger soft shadow than the stock
+   icon-dropshadow, and rounded corners on decoded images. The picture is
+   sized to the texture, so the radius and shadow follow the image edges. */
+.mc-stack-image {
+    border-radius: 12px;
+    box-shadow: 0 6px 20px alpha(black, 0.25);
+}
+.mc-stack-icon {
+    -gtk-icon-shadow: 0 6px 20px alpha(black, 0.25);
+}
 /* Column View row thumbnail: rounded corners. The Gtk.Picture sets
    overflow:hidden so this radius clips the COVER-cropped square texture. */
 .mc-row-thumbnail {

@@ -98,6 +98,7 @@ PREVIEW_SLOT_ICON = "icon"
 PREVIEW_SLOT_IMAGE = "image"
 PREVIEW_SLOT_VIDEO = "video"
 PREVIEW_SLOT_DOCUMENT = "document"
+PREVIEW_SLOT_STACK = "stack"
 
 
 # Video dimensions for the preview column's Dimensions row. Guarded like
@@ -135,10 +136,12 @@ from nautilus_my_computer.common import (
     _disk_icon_size,
     _disk_list_icon_size,
     _folder_card_width,
+    _format_item_count,
     _format_size,
     _gicon_renders,
     _icon_name_renders,
     _log,
+    _n,
     _native,
     _nautilus_icon_size,
     _nautilus_list_icon_size,
@@ -1878,6 +1881,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         # only ever deal with one file keep working unchanged.
         self._selection_state = ColumnSelection(self._store)
         self._selection = self._selection_state.model
+        self._is_current = False
+        self._selection.connect("selection-changed", lambda *_args: self._refresh_accent())
         self._row_widgets: dict[int, MyComputerColumnRow] = {}
 
         factory = Gtk.SignalListItemFactory()
@@ -2429,6 +2434,10 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         """Drop any multi-selection and keep just this row selected."""
         self._selection_state.select_only_item(item)
 
+    def connect_selection_changed(self, callback) -> None:
+        """Call callback() after any change of this column's row selection."""
+        self._selection.connect("selection-changed", lambda *_args: callback())
+
     def clear_selection(self) -> None:
         """Drop this column's own row selection -- used by column_view.py's
         _on_real_row_activated so only the row that led to the current
@@ -2538,7 +2547,14 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         the selected row's widget can be recycled away under Gtk.ListView),
         but it names the row-level effect it produces, not the column it's
         attached to."""
-        if is_current:
+        self._is_current = is_current
+        self._refresh_accent()
+
+    def _refresh_accent(self) -> None:
+        """Accent is reserved for the single row that leads to the preview or
+        next column. A Ctrl/Shift multi-selection keeps the native grey
+        :selected, same as earlier columns on the path."""
+        if self._is_current and self._selection_state.count() <= 1:
             self.list_view.add_css_class("mc-column-view-highlighted-row")
         else:
             self.list_view.remove_css_class("mc-column-view-highlighted-row")
@@ -2715,6 +2731,197 @@ def _make_kv_row(title: str) -> tuple[Gtk.Box, Gtk.Label]:
     return row, value_lbl
 
 
+_STACK_MAX_ITEMS = 3
+_STACK_ITEM_SIZE = 256
+# Finder-style pose: the front item is straight at its natural size, every item
+# under it is tilted and slightly larger so its edges peek out around the front.
+_STACK_UNDER_ANGLE = 8.0
+_STACK_UNDER_SCALE = 1.1
+
+
+def _stack_pose(rank: int) -> tuple[float, float]:
+    """(rotation in degrees, scale) of the stacked item `rank` places from the
+    front. Single place to change the look (e.g. a random angle method)."""
+    if rank == 0:
+        return 0.0, 1.0
+    angle = _STACK_UNDER_ANGLE if rank % 2 else -_STACK_UNDER_ANGLE
+    return angle, _STACK_UNDER_SCALE
+
+
+class MyComputerStackPreview(Gtk.Fixed):
+    """Finder-style preview of a multi-selection: the last few selected items
+    as a stack of icons (or decoded pictures for images), the last one in
+    front. Also totals the whole selection (documents, folders, size) and
+    reports it through `on_summary(text)` once every item has been queried."""
+
+    __gtype_name__ = "MyComputerStackPreview"
+
+    def __init__(self, uris: list[str], on_summary) -> None:
+        super().__init__()
+        self._uris = list(uris)
+        self._on_summary = on_summary
+        self._cancellable = Gio.Cancellable()
+        self._items: dict[str, Gtk.Box] = {}
+        self._pending = len(self._uris)
+        self._files = 0
+        self._folders = 0
+        self._bytes = 0
+
+        # Sized by its children and never clipped: tilted corners and shadows
+        # extend past the front item.
+        self.set_size_request(-1, -1)
+        self.set_overflow(Gtk.Overflow.VISIBLE)
+        self.set_halign(Gtk.Align.CENTER)
+        self.set_valign(Gtk.Align.CENTER)
+
+        # Last items of the list sit in front; add back to front so the front
+        # one draws on top.
+        shown = self._uris[-_STACK_MAX_ITEMS:][::-1]
+        center = _STACK_ITEM_SIZE / 2
+        for rank in range(len(shown) - 1, -1, -1):
+            # The wrapper is what gets transformed; its content (icon or
+            # picture) is swapped in place once an image has been decoded.
+            item = Gtk.Box()
+            item.set_size_request(_STACK_ITEM_SIZE, _STACK_ITEM_SIZE)
+            icon = Gtk.Image()
+            icon.set_pixel_size(_STACK_ITEM_SIZE)
+            icon.set_from_icon_name("text-x-generic")
+            # Hidden until the item's type is known: showing a placeholder
+            # first would flash before the real icon or the picture arrives.
+            icon.set_visible(False)
+            icon.add_css_class("mc-stack-icon")
+            item.append(icon)
+            self.put(item, 0, 0)
+            angle, scale = _stack_pose(rank)
+            transform = (
+                Gsk.Transform()
+                .translate(Graphene.Point().init(center, center))
+                .rotate(angle)
+                .scale(scale, scale)
+                .translate(Graphene.Point().init(-center, -center))
+            )
+            self.set_child_transform(item, transform)
+            self._items[shown[rank]] = item
+
+        for uri in self._uris:
+            Gio.File.new_for_uri(uri).query_info_async(
+                "standard::icon,standard::type,standard::content-type,standard::size",
+                Gio.FileQueryInfoFlags.NONE,
+                GLib.PRIORITY_DEFAULT,
+                self._cancellable,
+                self._on_info_ready,
+                uri,
+            )
+
+    def cancel(self) -> None:
+        self._cancellable.cancel()
+
+    def _on_info_ready(self, gfile: Gio.File, result: Gio.AsyncResult, uri: str) -> None:
+        if self._cancellable.is_cancelled():
+            return
+        self._pending -= 1
+        try:
+            info = gfile.query_info_finish(result)
+        except GLib.Error:
+            info = None
+        if info is None:
+            self._files += 1
+            item = self._items.get(uri)
+            if item is not None:
+                item.get_first_child().set_visible(True)
+        else:
+            if info.get_file_type() == Gio.FileType.DIRECTORY:
+                self._folders += 1
+            else:
+                self._files += 1
+                self._bytes += info.get_size()
+            item = self._items.get(uri)
+            if item is not None:
+                gio_icon = info.get_icon()
+                if _gicon_renders(gio_icon):
+                    item.get_first_child().set_from_gicon(gio_icon)
+                if not self._load_picture(item, uri, info):
+                    item.get_first_child().set_visible(True)
+        if self._pending == 0:
+            self._on_summary(self._summary())
+
+    def _load_picture(self, item: Gtk.Box, uri: str, info: Gio.FileInfo) -> bool:
+        """Images show their real picture; every other type keeps its file
+        icon (no document thumbnails). Returns True when a decode was started,
+        in which case the icon stays hidden until the picture (or a failure)
+        arrives."""
+        content_type = info.get_content_type()
+        if not content_type or not content_type.startswith("image/"):
+            return False
+        path = Gio.File.new_for_uri(uri).get_path()
+        if path is None:
+            return False
+        threading.Thread(target=self._picture_worker, args=(item, path), daemon=True).start()
+        return True
+
+    def _picture_worker(self, item: Gtk.Box, path: str) -> None:
+        try:
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
+                path, _STACK_ITEM_SIZE, _STACK_ITEM_SIZE, True
+            )
+        except GLib.Error:
+            GLib.idle_add(self._apply_picture, item, None)
+            return
+        if self._cancellable.is_cancelled():
+            return
+        if self._is_blank(pixbuf):
+            GLib.idle_add(self._apply_picture, item, None)
+            return
+        GLib.idle_add(self._apply_picture, item, Gdk.Texture.new_for_pixbuf(pixbuf))
+
+    @staticmethod
+    def _is_blank(pixbuf: GdkPixbuf.Pixbuf) -> bool:
+        """True when the decoded picture is fully transparent (nothing to show)."""
+        if not pixbuf.get_has_alpha():
+            return False
+        pixels = pixbuf.get_pixels()
+        stride = pixbuf.get_rowstride()
+        width = pixbuf.get_width()
+        channels = pixbuf.get_n_channels()
+        for y in range(pixbuf.get_height()):
+            start = y * stride
+            if any(pixels[start + channels - 1 : start + width * channels : channels]):
+                return False
+        return True
+
+    def _apply_picture(self, item: Gtk.Box, texture: Gdk.Texture | None) -> int:
+        if texture is None:
+            # Decode failed or came out blank: fall back to the file icon.
+            item.get_first_child().set_visible(True)
+        elif not self._cancellable.is_cancelled():
+            # Picture sized to the texture itself so the rounded clip and the
+            # shadow follow the real image edges, not the square slot.
+            picture = Gtk.Picture.new_for_paintable(texture)
+            picture.set_halign(Gtk.Align.CENTER)
+            picture.set_valign(Gtk.Align.CENTER)
+            picture.set_hexpand(True)
+            picture.set_overflow(Gtk.Overflow.HIDDEN)
+            picture.add_css_class("mc-stack-image")
+            item.remove(item.get_first_child())
+            item.append(picture)
+        return GLib.SOURCE_REMOVE
+
+    def _summary(self) -> str:
+        parts = []
+        if self._files:
+            parts.append(_n("{n} document", "{n} documents", self._files).format(n=self._files))
+        if self._folders:
+            parts.append(_n("{n} folder", "{n} folders", self._folders).format(n=self._folders))
+        counts = (
+            _("{first} and {second}").format(first=parts[0], second=parts[1])
+            if len(parts) == 2
+            else parts[0]
+        )
+        if self._files:
+            return f"{counts}, {_format_size(self._bytes)}"
+        return counts
+
+
 class MyComputerPreviewColumn(Gtk.Box):
     """A preview column split between a responsive image area and bottom-pinned
     file details. Always the permanent rightmost column in the chain (see
@@ -2724,10 +2931,16 @@ class MyComputerPreviewColumn(Gtk.Box):
 
     __gtype_name__ = "MyComputerPreviewColumn"
 
-    def __init__(self, ext, file_uri: str | None) -> None:
+    def __init__(self, ext, file_uri: str | None, uris: list[str] | None = None) -> None:
         super().__init__(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         self._ext = ext
-        self.file_uri = file_uri
+        # More than one selected item switches the whole widget to the
+        # Finder-style stack summary; file_uri then stays None so callers that
+        # read it (column_view.py chain sync) see "no single previewed file".
+        self._uris = list(uris) if uris and len(uris) > 1 else []
+        self.is_multi = bool(self._uris)
+        self.file_uri = None if self.is_multi else file_uri
+        self._stack = None
         self._cancellable = Gio.Cancellable()
         self._discoverer = None
         # Deferred single-click-policy activation, set on "pressed" and consumed on
@@ -2750,7 +2963,7 @@ class MyComputerPreviewColumn(Gtk.Box):
         # CSS target for the preview column (12px inner padding lives here).
         self.add_css_class("mc-preview-column")
 
-        if file_uri is None:
+        if self.file_uri is None and not self.is_multi:
             return
 
         # The outer widget is the fixed-height split. The first child is the
@@ -2867,8 +3080,12 @@ class MyComputerPreviewColumn(Gtk.Box):
         details_area.set_vexpand(False)
         self.append(details_area)
 
-        gfile = Gio.File.new_for_uri(file_uri)
-        self._name_lbl = Gtk.Label(label=gfile.get_basename() or file_uri)
+        if self.is_multi:
+            name_text = _format_item_count(len(self._uris))
+        else:
+            gfile = Gio.File.new_for_uri(self.file_uri)
+            name_text = gfile.get_basename() or self.file_uri
+        self._name_lbl = Gtk.Label(label=name_text)
         self._name_lbl.set_justify(Gtk.Justification.CENTER)
         self._name_lbl.set_wrap(True)
         self._name_lbl.set_max_width_chars(20)
@@ -2883,6 +3100,14 @@ class MyComputerPreviewColumn(Gtk.Box):
         self._detail_lbl.get_style_context().add_class("dim-label")
         self._detail_lbl.get_style_context().add_class("caption")
         details_area.append(self._detail_lbl)
+
+        if self.is_multi:
+            self._stack = MyComputerStackPreview(self._uris, self._detail_lbl.set_label)
+            self._preview_stack.set_overflow(Gtk.Overflow.VISIBLE)
+            self._thumb_revealer.set_overflow(Gtk.Overflow.VISIBLE)
+            self._preview_stack.add_named(self._stack, PREVIEW_SLOT_STACK)
+            self.set_preview_slot(PREVIEW_SLOT_STACK)
+            return
 
         created_row, self._created_val = _make_kv_row(_native("Created"))
         details_area.append(created_row)
@@ -2912,6 +3137,8 @@ class MyComputerPreviewColumn(Gtk.Box):
         selection_mode = bool(
             modifiers & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK)
         )
+        if self.file_uri is None:
+            return
         single_click = self._ext._nautilus_prefs.click_policy == "single"
         self._activate_on_release = single_click and n_press == 1 and not selection_mode
         if not single_click and n_press == 2 and not selection_mode:
@@ -3128,11 +3355,14 @@ class MyComputerPreviewColumn(Gtk.Box):
             PREVIEW_SLOT_IMAGE,
             PREVIEW_SLOT_VIDEO,
             PREVIEW_SLOT_DOCUMENT,
+            PREVIEW_SLOT_STACK,
         }:
             raise ValueError(f"unknown preview slot: {slot}")
         self._preview_stack.set_visible_child_name(slot)
 
     def destroy_enumeration(self) -> None:
         self._cancellable.cancel()
+        if self._stack is not None:
+            self._stack.cancel()
         if self._discoverer is not None:
             self._discoverer.stop()
