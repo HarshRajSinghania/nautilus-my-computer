@@ -634,11 +634,18 @@ class _ColumnViewHost:
         count = column.selection_count()
         if count > 1:
             index = self.columns.index(column)
-            for stale in self.columns[index + 1 :]:
+            stale_columns = self.columns[index + 1 :]
+            for stale in stale_columns:
                 stale.destroy_enumeration()
             del self.columns[index + 1 :]
             self._set_preview(None, uris=column.selected_uris())
-            self._rebuild_chain()
+            # Only the first step into a multi-selection drops columns and
+            # needs the full rebuild; every later Ctrl/Shift click just swaps
+            # the trailing preview, without rebinding every column's rows.
+            if stale_columns:
+                self._rebuild_chain()
+            else:
+                self._replace_preview_in_chain()
         elif self.preview_column.is_multi:
             # Back to zero or one row: the multi summary no longer applies.
             self._set_preview(None)
