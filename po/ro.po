@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: My Computer for Nautilus 0.13.1\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-25 15:20-0700\n"
+"POT-Creation-Date: 2026-10-05 08:14-0700\n"
 "PO-Revision-Date: 2026-08-16 20:51+0000\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: none\n"
@@ -442,3 +442,24 @@ msgstr "Foaie de calcul"
 #: nautilus_my_computer/widgets.py
 msgid "Dimensions"
 msgstr "Dimensiuni"
+
+#: nautilus_my_computer/widgets.py
+#, fuzzy, python-brace-format
+msgid "{n} document"
+msgid_plural "{n} documents"
+msgstr[0] "Document"
+msgstr[1] "Document"
+msgstr[2] "Document"
+
+#: nautilus_my_computer/widgets.py
+#, python-brace-format
+msgid "{n} folder"
+msgid_plural "{n} folders"
+msgstr[0] ""
+msgstr[1] ""
+msgstr[2] ""
+
+#: nautilus_my_computer/widgets.py
+#, python-brace-format
+msgid "{first} and {second}"
+msgstr ""
