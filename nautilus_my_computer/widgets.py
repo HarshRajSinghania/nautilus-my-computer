@@ -53,63 +53,66 @@ DND_HOVER_OPEN_MS = 500
 
 _ROW_THUMBNAIL_SEMAPHORE = threading.Semaphore(4)
 
+# Decoded Gdk.Texture objects kept in process, one independent lane per kind.
+# The kind names the use and fixes the texture size, so a texture can never be
+# served to a use it was not made for, even if two sizes are later made equal.
+# Entries are keyed by (uri, mtime), so an edited file never serves a stale one.
+#
 # Reparenting a column's ListView can make GTK unbind and immediately bind all
 # of its recycled rows again. GNOME's disk thumbnail cache avoids re-running a
 # thumbnailer in that case, but decoding every thumbnail again still makes the
-# row visibly fall back to its generic icon. Keep the final small Gdk.Texture
-# objects in process too, keyed by the source version. This is deliberately
-# bounded: the textures are only 24px row thumbnails, and old folders should
-# not retain a process-lifetime cache.
-_ROW_THUMBNAIL_TEXTURE_CACHE_MAX_ENTRIES = 512
-_row_thumbnail_texture_cache: collections.OrderedDict[tuple[str, int], Gdk.Texture] = (
-    collections.OrderedDict()
-)
-_row_thumbnail_texture_cache_lock = threading.Lock()
+# row visibly fall back to its generic icon, and revisiting a previewed file,
+# or extending a selection by one row (the other stack items stay), would
+# decode again. Each lane has its own storage, bound, eviction and lock, so one
+# flood (hundreds of rows) can never evict the few large previews. Row
+# thumbnails are read from worker threads, hence the locks.
+TEXTURE_ROW = "row"  # 24 px column row thumbnail
+TEXTURE_SINGLE = "single"  # _COLUMN_PREVIEW_IMAGE_SIZE single-file preview
+TEXTURE_STACK = "stack"  # _PREVIEW_ICON_SIZE multi-selection stack item
+_TEXTURE_CACHE_LIMITS = {TEXTURE_ROW: 512, TEXTURE_SINGLE: 16, TEXTURE_STACK: 16}
 
 
-def _get_row_thumbnail_texture(uri: str, mtime: int) -> Gdk.Texture | None:
-    key = (uri, mtime)
-    with _row_thumbnail_texture_cache_lock:
-        texture = _row_thumbnail_texture_cache.get(key)
-        if texture is not None:
-            _row_thumbnail_texture_cache.move_to_end(key)
-        return texture
+class _TextureLane:
+    """One bounded LRU of textures."""
+
+    def __init__(self, limit: int) -> None:
+        self._limit = limit
+        self._entries: collections.OrderedDict[tuple[str, int], Gdk.Texture] = (
+            collections.OrderedDict()
+        )
+        self._lock = threading.Lock()
+
+    def get(self, uri: str, mtime: int) -> Gdk.Texture | None:
+        key = (uri, mtime)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is not None:
+                self._entries.move_to_end(key)
+            return entry
+
+    def put(self, uri: str, mtime: int, texture: Gdk.Texture) -> None:
+        key = (uri, mtime)
+        with self._lock:
+            self._entries[key] = texture
+            self._entries.move_to_end(key)
+            while len(self._entries) > self._limit:
+                self._entries.popitem(last=False)
 
 
-def _cache_row_thumbnail_texture(uri: str, mtime: int, texture: Gdk.Texture) -> None:
-    key = (uri, mtime)
-    with _row_thumbnail_texture_cache_lock:
-        _row_thumbnail_texture_cache[key] = texture
-        _row_thumbnail_texture_cache.move_to_end(key)
-        while len(_row_thumbnail_texture_cache) > _ROW_THUMBNAIL_TEXTURE_CACHE_MAX_ENTRIES:
-            _row_thumbnail_texture_cache.popitem(last=False)
+class _TextureCache:
+    """The three lanes behind one object: get/put pick the lane by kind."""
+
+    def __init__(self) -> None:
+        self._lanes = {kind: _TextureLane(limit) for kind, limit in _TEXTURE_CACHE_LIMITS.items()}
+
+    def get(self, kind: str, uri: str, mtime: int) -> Gdk.Texture | None:
+        return self._lanes[kind].get(uri, mtime)
+
+    def put(self, kind: str, uri: str, mtime: int, texture: Gdk.Texture) -> None:
+        self._lanes[kind].put(uri, mtime, texture)
 
 
-# Preview pictures decoded straight from the source file, shared by the single
-# preview and the multi-selection stack. Keyed by (uri, mtime, size) so an
-# edited file or a different target size never serves a stale texture. Only
-# touched from the main loop. Revisiting a file, or extending a selection by one
-# row (the other front items stay), reuses the texture instead of re-decoding.
-_PREVIEW_TEXTURE_CACHE_MAX_ENTRIES = 16
-
-
-_preview_texture_cache: collections.OrderedDict[tuple[str, int, int], Gdk.Texture] = (
-    collections.OrderedDict()
-)
-
-
-def _get_preview_texture(uri: str, mtime: int, size: int) -> Gdk.Texture | None:
-    key = (uri, mtime, size)
-    texture = _preview_texture_cache.get(key)
-    if texture is not None:
-        _preview_texture_cache.move_to_end(key)
-    return texture
-
-
-def _cache_preview_texture(uri: str, mtime: int, size: int, texture: Gdk.Texture) -> None:
-    _preview_texture_cache[(uri, mtime, size)] = texture
-    while len(_preview_texture_cache) > _PREVIEW_TEXTURE_CACHE_MAX_ENTRIES:
-        _preview_texture_cache.popitem(last=False)
+_texture_cache = _TextureCache()
 
 
 def _decode_preview_pixbuf(path: str, size: int) -> GdkPixbuf.Pixbuf | None:
@@ -1410,7 +1413,7 @@ class MyComputerColumnRow(Gtk.Box):
         # thread and swapped in once ready, never on the main loop. Folders
         # never go through this: their icon is already the real folder icon.
         if not item.is_dir and item.content_type and _thumb_factory is not None:
-            cached_texture = _get_row_thumbnail_texture(item.uri, item.mtime)
+            cached_texture = _texture_cache.get(TEXTURE_ROW, item.uri, item.mtime)
             if cached_texture is not None:
                 self.set_thumbnail(cached_texture)
                 return
@@ -1565,7 +1568,7 @@ class MyComputerColumnRow(Gtk.Box):
             texture = self._load_thumbnail_texture(cached)
             if texture is None:
                 return
-            _cache_row_thumbnail_texture(uri, mtime, texture)
+            _texture_cache.put(TEXTURE_ROW, uri, mtime, texture)
             if cancellable.is_cancelled():
                 return
             GLib.idle_add(self._set_row_thumbnail_texture, texture, cancellable)
@@ -1603,7 +1606,7 @@ class MyComputerColumnRow(Gtk.Box):
         texture = self._load_thumbnail_texture(cached)
         if texture is None:
             return
-        _cache_row_thumbnail_texture(uri, mtime, texture)
+        _texture_cache.put(TEXTURE_ROW, uri, mtime, texture)
         GLib.idle_add(self._set_row_thumbnail_texture, texture, cancellable)
 
     def _set_row_thumbnail_texture(self, texture: Gdk.Texture, cancellable: Gio.Cancellable) -> int:
@@ -2923,7 +2926,7 @@ class MyComputerStackPreview(Gtk.Fixed):
         if path is None:
             return False
         mtime = info.get_attribute_uint64("time::modified")
-        cached = _get_preview_texture(uri, mtime, _PREVIEW_ICON_SIZE)
+        cached = _texture_cache.get(TEXTURE_STACK, uri, mtime)
         if cached is not None:
             self._apply_picture(item, cached)
             return True
@@ -2949,7 +2952,7 @@ class MyComputerStackPreview(Gtk.Fixed):
         GLib.idle_add(self._store_picture, item, uri, mtime, texture)
 
     def _store_picture(self, item: Gtk.Box, uri: str, mtime: int, texture: Gdk.Texture) -> int:
-        _cache_preview_texture(uri, mtime, _PREVIEW_ICON_SIZE, texture)
+        _texture_cache.put(TEXTURE_STACK, uri, mtime, texture)
         return self._apply_picture(item, texture)
 
     @staticmethod
@@ -2973,8 +2976,7 @@ class MyComputerStackPreview(Gtk.Fixed):
             item.get_first_child().set_visible(True)
         elif not self._cancellable.is_cancelled():
             # Picture sized to the texture itself so the rounded clip and the
-            # shadow follow the real image edges, not the square slot. The
-            # CSS class paints a checkerboard behind transparent pixels.
+            # shadow follow the real image edges, not the square slot.
             picture = Gtk.Picture.new_for_paintable(texture)
             picture.set_halign(Gtk.Align.CENTER)
             picture.set_valign(Gtk.Align.CENTER)
@@ -3290,7 +3292,7 @@ class MyComputerPreviewColumn(Gtk.Box):
             # location) -- use its file icon as the preview fallback.
             self._show_icon()
             return
-        cached = _get_preview_texture(self.file_uri, mtime, _COLUMN_PREVIEW_IMAGE_SIZE)
+        cached = _texture_cache.get(TEXTURE_SINGLE, self.file_uri, mtime)
         if cached is not None:
             self._apply_thumbnail(cached)
             return
@@ -3310,7 +3312,7 @@ class MyComputerPreviewColumn(Gtk.Box):
         GLib.idle_add(self._store_preview_image, uri, mtime, texture)
 
     def _store_preview_image(self, uri: str, mtime: int, texture: Gdk.Texture) -> int:
-        _cache_preview_texture(uri, mtime, _COLUMN_PREVIEW_IMAGE_SIZE, texture)
+        _texture_cache.put(TEXTURE_SINGLE, uri, mtime, texture)
         return self._apply_thumbnail(texture)
 
     def _show_icon(self) -> int:
