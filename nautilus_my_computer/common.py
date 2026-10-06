@@ -281,7 +281,6 @@ def _icon_name_renders(icon_name: str) -> bool:
 
 
 _ICONS_DIR = os.path.join(os.path.dirname(__file__), "icons")
-_ASSETS_DIR = os.path.join(os.path.dirname(__file__), "assets")
 
 
 def _bundled_gicon(icon_name: str) -> Gio.FileIcon | None:

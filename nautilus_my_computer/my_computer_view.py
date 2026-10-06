@@ -552,10 +552,8 @@ _CSS = b"""
 /* Multi-selection stack preview: larger soft shadow than the stock
    icon-dropshadow, and rounded corners on decoded images. The picture is
    sized to the texture, so the radius and shadow follow the image edges.
-   The opaque checkerboard (a copy of Nautilus's, flattened over white) shows
-   behind transparent images. */
+   Only applied to opaque images. */
 .mc-stack-image {
-    background: url("@CHECKERBOARD_URI@") repeat;
     border-radius: 12px;
     box-shadow: 0 6px 20px alpha(black, 0.25);
 }
@@ -669,10 +667,7 @@ _CSS = b"""
 .mc-toggle-sep.mc-toggle-sep-hidden {
     opacity: 0;
 }
-""".replace(
-    b"@CHECKERBOARD_URI@",
-    Gio.File.new_for_path(os.path.join(common._ASSETS_DIR, "checkerboard.png")).get_uri().encode(),
-)
+"""
 
 
 def _read_io_busy() -> tuple:
