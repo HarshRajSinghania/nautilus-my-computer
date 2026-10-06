@@ -165,6 +165,7 @@ from nautilus_my_computer.common import (
     _GROUP_ICON,
     _INTERNAL_FSTYPES,
     _LIST_BAR_MAX_WIDTH,
+    _PREVIEW_ICON_SIZE,
     N_,
     _,
     _disk_icon_size,
@@ -2796,7 +2797,6 @@ def _make_kv_row(title: str) -> tuple[Gtk.Box, Gtk.Label]:
 
 
 _STACK_MAX_ITEMS = 3
-_STACK_ITEM_SIZE = 256
 # Finder-style pose: the front item is straight at its natural size, every item
 # under it is tilted and slightly larger so its edges peek out around the front.
 _STACK_UNDER_ANGLE = 8.0
@@ -2841,14 +2841,14 @@ class MyComputerStackPreview(Gtk.Fixed):
         # Last items of the list sit in front; add back to front so the front
         # one draws on top.
         shown = self._uris[-_STACK_MAX_ITEMS:][::-1]
-        center = _STACK_ITEM_SIZE / 2
+        center = _PREVIEW_ICON_SIZE / 2
         for rank in range(len(shown) - 1, -1, -1):
             # The wrapper is what gets transformed; its content (icon or
             # picture) is swapped in place once an image has been decoded.
             item = Gtk.Box()
-            item.set_size_request(_STACK_ITEM_SIZE, _STACK_ITEM_SIZE)
+            item.set_size_request(_PREVIEW_ICON_SIZE, _PREVIEW_ICON_SIZE)
             icon = Gtk.Image()
-            icon.set_pixel_size(_STACK_ITEM_SIZE)
+            icon.set_pixel_size(_PREVIEW_ICON_SIZE)
             icon.set_from_icon_name("text-x-generic")
             # Hidden until the item's type is known: showing a placeholder
             # first would flash before the real icon or the picture arrives.
@@ -2921,7 +2921,7 @@ class MyComputerStackPreview(Gtk.Fixed):
         if path is None:
             return False
         mtime = info.get_attribute_uint64("time::modified")
-        cached = _get_preview_texture(uri, mtime, _STACK_ITEM_SIZE)
+        cached = _get_preview_texture(uri, mtime, _PREVIEW_ICON_SIZE)
         if cached is not None:
             self._apply_picture(item, cached)
             return True
@@ -2935,9 +2935,9 @@ class MyComputerStackPreview(Gtk.Fixed):
         # Nautilus) is far cheaper to read than the original; never generated
         # here, so no thumbnailer subprocess. Without one, decode the original.
         thumb_path = _thumb_factory.lookup(uri, mtime) if _thumb_factory is not None else None
-        pixbuf = _decode_preview_pixbuf(thumb_path or path, _STACK_ITEM_SIZE)
+        pixbuf = _decode_preview_pixbuf(thumb_path or path, _PREVIEW_ICON_SIZE)
         if pixbuf is None and thumb_path:
-            pixbuf = _decode_preview_pixbuf(path, _STACK_ITEM_SIZE)
+            pixbuf = _decode_preview_pixbuf(path, _PREVIEW_ICON_SIZE)
         if pixbuf is None or self._is_blank(pixbuf):
             GLib.idle_add(self._apply_picture, item, None)
             return
@@ -2946,7 +2946,7 @@ class MyComputerStackPreview(Gtk.Fixed):
         GLib.idle_add(self._store_picture, item, uri, mtime, Gdk.Texture.new_for_pixbuf(pixbuf))
 
     def _store_picture(self, item: Gtk.Box, uri: str, mtime: int, texture: Gdk.Texture) -> int:
-        _cache_preview_texture(uri, mtime, _STACK_ITEM_SIZE, texture)
+        _cache_preview_texture(uri, mtime, _PREVIEW_ICON_SIZE, texture)
         return self._apply_picture(item, texture)
 
     @staticmethod
@@ -3067,7 +3067,7 @@ class MyComputerPreviewColumn(Gtk.Box):
         self.append(preview_area)
 
         self._icon = Gtk.Image()
-        self._icon.set_pixel_size(128)
+        self._icon.set_pixel_size(_PREVIEW_ICON_SIZE)
         self._icon.set_from_icon_name("text-x-generic")
         self._icon.set_halign(Gtk.Align.CENTER)
         self._icon.set_valign(Gtk.Align.CENTER)
