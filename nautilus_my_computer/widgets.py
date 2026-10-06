@@ -1865,6 +1865,17 @@ class ColumnSelection:
     def contains(self, item) -> bool:
         return any(item is other for other in self.items())
 
+    def set_uris(self, uris) -> None:
+        """Make exactly these URIs the selection (the cross-view bridge, #178).
+        While the rows are still loading, end_reload reconciles and applies."""
+        uris = frozenset(uris)
+        anchor = next(iter(uris)) if len(uris) == 1 else None
+        sel = selection.Selection(uris, anchor)
+        if self._reloading:
+            self._sel = sel
+        else:
+            self._apply(selection.reconcile(sel, self._ordered()))
+
     def clear(self) -> None:
         self._apply(selection.clear(self._sel))
 
@@ -2619,6 +2630,10 @@ class MyComputerColumn(Gtk.ScrolledWindow):
             return
         for callback in self._selection_callbacks:
             callback()
+
+    def set_selected_uris(self, uris) -> None:
+        """Select exactly these URIs, also before the rows have loaded."""
+        self._selection_state.set_uris(uris)
 
     def clear_selection(self) -> None:
         """Drop this column's own row selection -- used by column_view.py's

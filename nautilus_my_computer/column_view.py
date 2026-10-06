@@ -36,6 +36,7 @@ from nautilus_my_computer.context_menu import (
     open_section,
     properties_section,
 )
+from nautilus_my_computer.native_selection import NativeBridge
 from nautilus_my_computer.widgets import (
     MyComputerColumn,
     MyComputerColumnRow,
@@ -419,9 +420,13 @@ class NativeCutStateObserver:
 
 
 class _ColumnViewHost:
-    def __init__(self, ext, win: Gtk.Window, display: Gdk.Display | None, root_uri: str) -> None:
+    def __init__(
+        self, ext, win: Gtk.Window, display: Gdk.Display | None, root_uri: str, slot
+    ) -> None:
         self._ext = ext
         self._win = win
+        self._native_bridge = NativeBridge(slot, self.adopt_native_selection)
+        self._adopting_native = False
         self._root_uri = root_uri
         self._clipboard_uris: list[str] = []
         self._clipboard_is_cut = False
@@ -612,6 +617,7 @@ class _ColumnViewHost:
             on_drag_start=self._activate_column,
         )
         column.connect_selection_changed(lambda: self._schedule_multi_preview(column))
+        column.connect_selection_changed(lambda: self._push_selection_to_native(column))
         left_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
         left_click.connect("released", self._on_column_background_clicked, column)
         column.add_controller(left_click)
@@ -619,6 +625,29 @@ class _ColumnViewHost:
         right_click.connect("pressed", self._on_column_background_right_clicked, column)
         column.add_controller(right_click)
         return column
+
+    def _push_selection_to_native(self, column) -> None:
+        """Mirror a column's selection into Nautilus's native model (#178), so
+        List/Grid show it and begin_location_change saves it for history. Runs
+        synchronously, before any drill-down commit navigates the slot."""
+        if self._adopting_native:
+            return
+        self._native_bridge.push(column.folder_uri, column.selected_uris())
+
+    def adopt_native_selection(self, uris: list[str]) -> None:
+        """Nautilus changed the native selection (Back/Forward restore, entering
+        Column View): show it in the deepest column, read only."""
+        if not self.columns:
+            return
+        deepest = self.columns[-1]
+        if not self._native_bridge._shows(deepest.folder_uri):
+            return
+        self._adopting_native = True
+        try:
+            self._activate_column(deepest)
+            deepest.set_selected_uris(uris)
+        finally:
+            self._adopting_native = False
 
     def _schedule_multi_preview(self, column) -> None:
         """Selection changes arrive in bursts (a plain click clears then
@@ -2790,7 +2819,7 @@ def build_column_view(ext, win: Gtk.Window, slot: Gtk.Widget) -> Gtk.Widget:
     # slot's real current location on the next Ctrl+3 press.
     loc = slot.get_property("location")
     root_uri = loc.get_uri() if loc is not None else default_root_uri()
-    host = _ColumnViewHost(ext, win, win.get_display(), root_uri)
+    host = _ColumnViewHost(ext, win, win.get_display(), root_uri, slot)
 
     # Keep the early-access status attached to the view itself rather than
     # Nautilus's toolbar: the toolbar remains native, while the badge stays
@@ -2842,6 +2871,8 @@ def enter_column_view(ext, win: Gtk.Window, root_uri: str) -> None:
     # set_visible_child below (issue #137's per-slot view-election arbiter).
     ext._leave_computer_panel_for_slot(win, slot)
     host.sync_to_uri(root_uri)
+    # The native view is the authority on entry, an empty selection included.
+    host.adopt_native_selection(host._native_bridge.read())
     stack = view.get_parent()
     current_child = stack.get_visible_child()
     if current_child is not view:
@@ -2851,6 +2882,21 @@ def enter_column_view(ext, win: Gtk.Window, root_uri: str) -> None:
     stack.set_visible_child(view)
     host.set_native_cut_observer_active(True)
     populate_column_view(ext, win)
+
+
+def carry_selection_to_native(slot: Gtk.Widget) -> None:
+    """Before leaving Column View for List/Grid: make the native view show the
+    active column's selection. The deepest column is already mirrored live; an
+    ancestor column's folder is not what the native model shows, so the slot is
+    navigated there and the URIs applied after it loads."""
+    view = getattr(slot, "_mc_column_view", None)
+    host = getattr(view, "_mc_column_host", None)
+    column = host._focused_column() if host is not None else None
+    if column is None or column is host.columns[-1]:
+        return
+    uris = column.selected_uris()
+    if uris:
+        host._native_bridge.carry(column.folder_uri, uris)
 
 
 def leave_column_view(slot: Gtk.Widget) -> None:

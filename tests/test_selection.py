@@ -86,3 +86,60 @@ class SelectionRules(unittest.TestCase):
     def test_ordered_uris_follow_display_order(self):
         s = Selection(frozenset("eb"))
         self.assertEqual(sel.ordered_uris(s, ORDER), ("b", "e"))
+
+
+class PendingWrite(unittest.TestCase):
+    def pending(self, uris):
+        p = sel.PendingSelection()
+        p.set("folder", uris)
+        return p
+
+    def test_complete_match_is_written_once(self):
+        p = self.pending("ab")
+        self.assertEqual(p.resolve(frozenset("abc"), final=False), frozenset("ab"))
+        self.assertFalse(p.active)
+        self.assertIsNone(p.resolve(frozenset("abc"), final=True))
+
+    def test_partial_match_is_never_written(self):
+        p = self.pending("ab")
+        self.assertIsNone(p.resolve(frozenset("a"), final=False))
+        self.assertTrue(p.active)
+        self.assertIsNone(p.resolve(frozenset("a"), final=True))
+        self.assertFalse(p.active)
+
+    def test_partial_then_complete_after_more_rows(self):
+        p = self.pending("ab")
+        self.assertIsNone(p.resolve(frozenset("a"), final=False))
+        self.assertEqual(p.resolve(frozenset("ab"), final=True), frozenset("ab"))
+
+    def test_clear_request_on_empty_folder_resolves(self):
+        p = self.pending("")
+        self.assertEqual(p.resolve(frozenset(), final=True), frozenset())
+
+    def test_native_selection_right_after_write_is_not_overwritten(self):
+        p = self.pending("a")
+        p.resolve(frozenset("ab"), final=False)
+        # The user then selects natively: nothing is pending any more.
+        self.assertIsNone(p.resolve(frozenset("ab"), final=True))
+
+    def test_native_selection_drops_a_waiting_request(self):
+        p = self.pending("ab")
+        p.resolve(frozenset("a"), final=False)
+        p.drop()
+        self.assertIsNone(p.resolve(frozenset("ab"), final=True))
+
+
+class AdoptNative(unittest.TestCase):
+    def test_empty_selection_is_adopted(self):
+        self.assertTrue(sel.adopt_native(loading=False, writing=False, pending=False))
+
+    def test_loading_is_a_transition_not_a_clear(self):
+        self.assertFalse(sel.adopt_native(loading=True, writing=False, pending=False))
+
+    def test_own_write_and_pending_request_are_not_adopted(self):
+        self.assertFalse(sel.adopt_native(loading=False, writing=True, pending=False))
+        self.assertFalse(sel.adopt_native(loading=False, writing=False, pending=True))
+
+
+if __name__ == "__main__":
+    unittest.main()

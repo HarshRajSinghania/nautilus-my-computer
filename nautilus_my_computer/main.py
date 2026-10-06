@@ -1287,6 +1287,7 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         if slot is not None and column_view.slot_is_showing_column(slot):
             _log("_leave_column_view_for_native_mode: dropping back to native view")
             column_view.leave_column_view(slot)
+            column_view.carry_selection_to_native(slot)
             if getattr(slot, "_mc_column_native_stopped", False):
                 GLib.idle_add(self._reload_native_slot_after_column, win, slot)
         return False

@@ -78,3 +78,48 @@ def reconcile(sel: Selection, ordered: Sequence[str]) -> Selection:
 def ordered_uris(sel: Selection, ordered: Sequence[str]) -> tuple[str, ...]:
     """The selected URIs in display order (for the stack preview and file ops)."""
     return tuple(uri for uri in ordered if uri in sel.uris)
+
+
+class PendingSelection:
+    """A Column View selection waiting to be written into the native model of
+    one folder (the cross-view bridge). Nautilus stays the authority: the
+    request is applied at most once, never partially, and dropped as soon as
+    Nautilus or the user changes the native selection."""
+
+    def __init__(self) -> None:
+        self.folder: str | None = None
+        self.uris: frozenset[str] = frozenset()
+
+    @property
+    def active(self) -> bool:
+        return self.folder is not None
+
+    def set(self, folder: str, uris) -> None:
+        self.folder = folder
+        self.uris = frozenset(uris)
+
+    def drop(self) -> None:
+        self.folder = None
+        self.uris = frozenset()
+
+    def resolve(self, available: frozenset[str], *, final: bool) -> frozenset[str] | None:
+        """URIs to write now, or None. Only a complete match is ever written. A
+        partial match stays pending until `final` (the folder finished loading,
+        so a missing file is really gone), then is dropped unwritten."""
+        if self.folder is None:
+            return None
+        if self.uris <= available:
+            ready = self.uris
+            self.drop()
+            return ready
+        if final:
+            self.drop()
+        return None
+
+
+def adopt_native(*, loading: bool, writing: bool, pending: bool) -> bool:
+    """Whether a native selection change should be copied into Column View: not
+    while the folder loads (the model's empty/refill and Nautilus's own restore
+    are transitions), not our own write, and not while our request is pending.
+    An empty selection is a real selection and is adopted."""
+    return not (loading or writing or pending)
