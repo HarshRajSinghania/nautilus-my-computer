@@ -610,7 +610,8 @@ _CSS = b"""
 .mc-column-list > row:selected:hover {
     background-color: transparent;
 }
-.mc-column-list > row:selected > .mc-column-row-content {
+.mc-column-list > row:selected > .mc-column-row-content,
+.mc-column-list > row > .mc-column-row-content.mc-row-path {
     background-color: alpha(currentColor, 0.1);
     border-radius: 6px;
 }

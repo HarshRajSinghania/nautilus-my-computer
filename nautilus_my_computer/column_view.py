@@ -609,6 +609,7 @@ class _ColumnViewHost:
             on_row_pressed=self._on_row_pressed,
             on_row_released=self._on_row_released,
             on_files_dropped=self._on_files_dropped,
+            on_drag_start=self._activate_column,
         )
         column.connect_selection_changed(lambda: self._schedule_multi_preview(column))
         left_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
@@ -654,15 +655,10 @@ class _ColumnViewHost:
 
     def _on_column_loaded(self, column) -> None:
         """A freshly created column's enumerate_children_async just finished
-        populating its rows. _sync_column_selections runs synchronously right
-        after a column is created (in _on_real_row_activated / sync_to_uri),
-        before that async load has had any chance to complete -- for a brand
-        new column (its Gio.ListStore still empty at that point),
-        select_child_for_uri silently finds nothing to select. Re-apply now
-        that the rows actually exist, so the committed-path highlight (and
-        which column reads as "current", see _apply_focused_column_style)
-        isn't lost for a chain that got freshly rebuilt rather than reusing
-        existing columns.
+        populating its rows. The path highlight is derived from URIs at bind
+        time, so it needs no re-application for new rows; this only refreshes
+        which column reads as "current" (see _apply_focused_column_style).
+        It never writes the selection.
 
         Row press/release/right-click controllers are no longer installed
         here: a GtkListView row widget is recycled across many different
@@ -674,7 +670,6 @@ class _ColumnViewHost:
         through the on_row_pressed/on_row_released callbacks passed into its
         constructor above.
         """
-        self._sync_column_selections()
         self._apply_focused_column_style()
         self._set_cut_rows()
 
@@ -704,8 +699,10 @@ class _ColumnViewHost:
     def _on_column_background_clicked(
         self, gesture: Gtk.GestureClick, _n_press: int, x: float, y: float, column
     ) -> None:
-        """A plain click on the empty area of a column clears its selection."""
-        if column.selection_count() == 0:
+        """A plain click on the empty area of a column makes it the active
+        column and clears the active selection, like Nautilus's background
+        click. Ctrl and Shift clicks do nothing."""
+        if self._has_selection_modifier(gesture):
             return
         widget = column.pick(x, y, Gtk.PickFlags.DEFAULT)
         while widget is not None and widget is not column:
@@ -715,21 +712,26 @@ class _ColumnViewHost:
         self._cancel_row_commit()
         self._clear_selection_keep_chain(column)
 
+    @staticmethod
+    def _has_selection_modifier(gesture: Gtk.GestureClick) -> bool:
+        state = gesture.get_current_event_state()
+        return bool(state & (Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK))
+
     def _clear_selection_keep_chain(self, column) -> None:
-        """Drop the user's own selection in column, then re-derive every
-        column's committed-path highlight so the open chain stays visible."""
+        """Make column active and drop its selection. The open chain stays,
+        shown by the path highlight."""
+        self._activate_column(column)
         column.clear_selection()
-        self._sync_column_selections()
 
     def _on_canvas_clicked(
-        self, _gesture: Gtk.GestureClick, _n_press: int, x: float, y: float
+        self, gesture: Gtk.GestureClick, _n_press: int, x: float, y: float
     ) -> None:
         """A plain click anywhere that is not a row (preview column, empty
         space after the last column, a column's blank area) clears the
         focused column's selection. Rows, scrollbars and the paned resize
         handles keep their own behaviour."""
         column = self._focused_column()
-        if column is None or column.selection_count() == 0:
+        if column is None or self._has_selection_modifier(gesture):
             return
         widget = self.aligner.pick(x, y, Gtk.PickFlags.DEFAULT)
         # A pick landing on a Gtk.Paned itself is its resize handle; every
@@ -738,7 +740,9 @@ class _ColumnViewHost:
         if isinstance(widget, Gtk.Paned):
             return
         while widget is not None and widget is not self.aligner:
-            if isinstance(widget, (MyComputerColumnRow, Gtk.Scrollbar)):
+            if widget is self.preview_column or isinstance(
+                widget, (MyComputerColumnRow, Gtk.Scrollbar)
+            ):
                 return
             widget = widget.get_parent()
         self._cancel_row_commit()
@@ -758,6 +762,11 @@ class _ColumnViewHost:
         controller runs only for the column background.
         """
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        # Like Nautilus, the secondary click clears the selection first, then
+        # opens the background menu.
+        if not self._has_selection_modifier(gesture):
+            self._cancel_row_commit()
+            self._clear_selection_keep_chain(column)
         uri = column.folder_uri
         sections = [
             background_creation_section(
@@ -893,9 +902,8 @@ class _ColumnViewHost:
 
         Unlike native's select_single_item_if_not_selected before
         activating, middle-click here does not select or :active-anchor the
-        row. A blue :selected row means "part of the committed Miller path"
-        (_sync_column_selections) and would be wrong for a row being opened
-        elsewhere; there is also no popover to anchor to, unlike the
+        row. A selected row means "a file the user chose" and would be wrong
+        for a row being opened elsewhere; there is also no popover to anchor to, unlike the
         right-click case below.
         """
         # The pointer takes over from here: a keyboard commit still waiting
@@ -968,9 +976,8 @@ class _ColumnViewHost:
         through us. Drives the same real behaviour click used to:
         MyComputerColumn's own _on_row_activated_internal --
         same-file-reopens-to-open, double-click-window, and drill-into-folder
-        dispatch -- which already applies the real native selection via
-        _sync_column_selections downstream, so no separate cosmetic state-flag
-        handling is needed here.
+        dispatch -- after the click's own selection below, and
+        _apply_path_highlights downstream marks the open path.
 
         Two details mirror GtkListBox's own released handler rather than
         simplifying past it:
@@ -1006,6 +1013,7 @@ class _ColumnViewHost:
             # because GTK's own anchor never sees our claimed clicks. No
             # activation, so nothing drills in or opens a column.
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+            self._activate_column(column)
             column.modifier_click(row.item, ctrl=ctrl, shift=shift)
             return
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
@@ -1030,14 +1038,16 @@ class _ColumnViewHost:
         extension owns directly.
         """
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+        self._activate_column(column)
         # Keep the context-menu target in GTK's native dark-grey :active
         # state; it must not become the Miller column's blue :selected row.
         components.set_row_active(row.row_node(), True)
         uri = row.uri
-        # A row inside a multi-selection acts for the whole selection; any
-        # other row acts alone and leaves the committed selection untouched.
-        in_multi = column.selection_count() > 1 and column.is_item_selected(row.item)
-        targets = column.selected_uris() if in_multi else [uri]
+        # selection.target: a row inside the selection acts for the whole
+        # selection; any other row becomes the selection and acts alone.
+        if not column.is_item_selected(row.item):
+            column.select_only_item(row.item)
+        targets = column.selected_uris()
         content_type = row.content_type or "application/octet-stream"
         default_app = Gio.AppInfo.get_default_for_type(content_type, False)
         open_with_template = _native("Open With %s")
@@ -1570,7 +1580,7 @@ class _ColumnViewHost:
                 if not stale:
                     chain_update = "replace_preview"
 
-        self._sync_column_selections()
+        self._apply_path_highlights()
         self._apply_focused_column_style()
         if direction == NAV_UP:
             # Collapsing back to an earlier column can drop a lot of width
@@ -1726,7 +1736,7 @@ class _ColumnViewHost:
         # one column short of it (same convention _drill_into_open_chain
         # below uses for its own newly appended column).
         self.focused_index = len(self.columns) - 1
-        self._sync_column_selections()
+        self._apply_path_highlights()
         self._apply_focused_column_style()
         # Truncating to an ancestor is the same kind of collapse as NAV_UP
         # above -- reset the scroll position before the rebuild so the
@@ -1767,7 +1777,7 @@ class _ColumnViewHost:
         # See the truncate branch above: the newly appended column is
         # "current" for keyboard nav's purposes, same as any other drill.
         self.focused_index = len(self.columns) - 1
-        self._sync_column_selections()
+        self._apply_path_highlights()
         self._apply_focused_column_style()
         self._rebuild_chain()
         self._fade_in(new_column)
@@ -1775,27 +1785,31 @@ class _ColumnViewHost:
         if not fits:
             self._align_to_viewport_end(new_column)
 
-    def _sync_column_selections(self) -> None:
-        """Each column's own row selection is derived from the URI chain
-        that is actually open right now, not tracked as click history: a
-        column highlights the row whose URI equals the next column's
-        folder_uri, and the last column highlights the previewed file (or
-        nothing, if the last column is itself a fresh empty drill-down).
-        This is what keeps the accent highlight (see _CSS's .mc-column-list
-        rule) on exactly the active path -- redriving every column here,
-        including ones the click didn't touch, means a stale selection from
-        a since-abandoned branch can never linger."""
+    def _apply_path_highlights(self) -> None:
+        """Show the open Miller path apart from the user's file selection
+        (#178). Each column marks the row whose URI equals the next column's
+        folder_uri, and the last column marks the previewed file, derived from
+        the chain that is open right now. Only the focused column holds a real
+        selection: every other column's own selection is dropped, so its row
+        falls back to the path mark and can never be a copy, trash or drag
+        source."""
         for i, col in enumerate(self.columns):
-            if i == self.focused_index and col.selection_count() > 1:
-                # A Ctrl/Shift multi-selection (#178) is the user's own choice,
-                # not a stale branch: leave it until the next plain click.
-                continue
             if i + 1 < len(self.columns):
-                col.select_child_for_uri(self.columns[i + 1].folder_uri)
-            elif self.preview_column.file_uri:
-                col.select_child_for_uri(self.preview_column.file_uri)
+                path_uri = self.columns[i + 1].folder_uri
             else:
+                path_uri = self.preview_column.file_uri or None
+            col.set_path_uri(path_uri)
+            if i != self.focused_index:
                 col.clear_selection()
+
+    def _activate_column(self, column) -> None:
+        """Make column the active one: the previously active column loses its
+        selection (both the stored URIs and the GTK projection)."""
+        if column not in self.columns:
+            return
+        self.focused_index = self.columns.index(column)
+        self._apply_path_highlights()
+        self._apply_focused_column_style()
 
     def _apply_focused_column_style(self) -> None:
         """Mark exactly self.columns[self.focused_index] as *the* column
@@ -1904,6 +1918,9 @@ class _ColumnViewHost:
         _on_row_activated_internal's mouse click-policy/repeat-click timing,
         not a plain "open now".
         """
+        if keyval == Gdk.KEY_Escape:
+            # Nautilus's views do not handle Esc; let it reach the window.
+            return False
         if keyval in (Gdk.KEY_asciitilde, Gdk.KEY_slash):
             # Handing off to Nautilus's own address-bar shortcuts -- nothing
             # queued for this chain should land after the user has moved on.
@@ -1924,11 +1941,6 @@ class _ColumnViewHost:
         # through to the same swallow every other unclaimed key gets below,
         # rather than running the plain-key action.
         shift = bool(int(gtk_state) & Gdk.ModifierType.SHIFT_MASK)
-        if keyval == Gdk.KEY_Escape and column.selection_count() > 0:
-            # Unlike the native views, Esc clears the selection here.
-            self._cancel_row_commit()
-            self._clear_selection_keep_chain(column)
-            return True
         if not shift:
             if keyval in (Gdk.KEY_Left, Gdk.KEY_KP_Left):
                 return self._focus_parent_column()
@@ -2005,10 +2017,13 @@ class _ColumnViewHost:
         self._flush_row_commit()
         if self.focused_index <= 0:
             return True
-        self.focused_index -= 1
-        self._apply_focused_column_style()
+        self._activate_column(self.columns[self.focused_index - 1])
         col = self._focused_column()
         if col is not None:
+            # An explicit move back into the parent selects the row that leads
+            # to the column just left; its path mark alone is not a selection.
+            if col.path_uri:
+                col.select_child_for_uri(col.path_uri)
             if not self._column_fully_visible(self.focused_index):
                 self._align_to_viewport_start(col)
             # _flush_row_commit above may just have kicked off an async
@@ -2035,8 +2050,7 @@ class _ColumnViewHost:
             # parent row that opened it as the focused selection.
             self._arm_focus_retry(self._focused_column())
             return True
-        self.focused_index += 1
-        self._apply_focused_column_style()
+        self._activate_column(col)
         if not self._column_fully_visible(self.focused_index):
             self._align_to_viewport_end(col)
         self._arm_focus_retry(col)
