@@ -85,6 +85,40 @@ def _cache_row_thumbnail_texture(uri: str, mtime: int, texture: Gdk.Texture) -> 
             _row_thumbnail_texture_cache.popitem(last=False)
 
 
+# Preview pictures decoded straight from the source file, shared by the single
+# preview and the multi-selection stack. Keyed by (uri, mtime, size) so an
+# edited file or a different target size never serves a stale texture. Only
+# touched from the main loop. Revisiting a file, or extending a selection by one
+# row (the other front items stay), reuses the texture instead of re-decoding.
+_PREVIEW_TEXTURE_CACHE_MAX_ENTRIES = 16
+_preview_texture_cache: collections.OrderedDict[tuple[str, int, int], Gdk.Texture] = (
+    collections.OrderedDict()
+)
+
+
+def _get_preview_texture(uri: str, mtime: int, size: int) -> Gdk.Texture | None:
+    key = (uri, mtime, size)
+    texture = _preview_texture_cache.get(key)
+    if texture is not None:
+        _preview_texture_cache.move_to_end(key)
+    return texture
+
+
+def _cache_preview_texture(uri: str, mtime: int, size: int, texture: Gdk.Texture) -> None:
+    _preview_texture_cache[(uri, mtime, size)] = texture
+    while len(_preview_texture_cache) > _PREVIEW_TEXTURE_CACHE_MAX_ENTRIES:
+        _preview_texture_cache.popitem(last=False)
+
+
+def _decode_preview_pixbuf(path: str, size: int) -> GdkPixbuf.Pixbuf | None:
+    """Decode a source image to fit `size` x `size`. Worker-thread safe.
+    None when it cannot be decoded."""
+    try:
+        return GdkPixbuf.Pixbuf.new_from_file_at_scale(path, size, size, True)
+    except GLib.Error:
+        return None
+
+
 # Frames MyComputerColumn.with_selected_row waits for a scrolled-to row to
 # actually bind before giving up. Generous: the realize lands within a frame
 # or two of the scroll_to in practice, this is only the ceiling for a stall.
@@ -2835,7 +2869,7 @@ class MyComputerStackPreview(Gtk.Fixed):
 
         for uri in self._uris:
             Gio.File.new_for_uri(uri).query_info_async(
-                "standard::icon,standard::type,standard::content-type,standard::size",
+                "standard::icon,standard::type,standard::content-type,standard::size,time::modified",
                 Gio.FileQueryInfoFlags.NONE,
                 GLib.PRIORITY_DEFAULT,
                 self._cancellable,
@@ -2886,23 +2920,28 @@ class MyComputerStackPreview(Gtk.Fixed):
         path = Gio.File.new_for_uri(uri).get_path()
         if path is None:
             return False
-        threading.Thread(target=self._picture_worker, args=(item, path), daemon=True).start()
+        mtime = info.get_attribute_uint64("time::modified")
+        cached = _get_preview_texture(uri, mtime, _STACK_ITEM_SIZE)
+        if cached is not None:
+            self._apply_picture(item, cached)
+            return True
+        threading.Thread(
+            target=self._picture_worker, args=(item, path, uri, mtime), daemon=True
+        ).start()
         return True
 
-    def _picture_worker(self, item: Gtk.Box, path: str) -> None:
-        try:
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                path, _STACK_ITEM_SIZE, _STACK_ITEM_SIZE, True
-            )
-        except GLib.Error:
+    def _picture_worker(self, item: Gtk.Box, path: str, uri: str, mtime: int) -> None:
+        pixbuf = _decode_preview_pixbuf(path, _STACK_ITEM_SIZE)
+        if pixbuf is None or self._is_blank(pixbuf):
             GLib.idle_add(self._apply_picture, item, None)
             return
         if self._cancellable.is_cancelled():
             return
-        if self._is_blank(pixbuf):
-            GLib.idle_add(self._apply_picture, item, None)
-            return
-        GLib.idle_add(self._apply_picture, item, Gdk.Texture.new_for_pixbuf(pixbuf))
+        GLib.idle_add(self._store_picture, item, uri, mtime, Gdk.Texture.new_for_pixbuf(pixbuf))
+
+    def _store_picture(self, item: Gtk.Box, uri: str, mtime: int, texture: Gdk.Texture) -> int:
+        _cache_preview_texture(uri, mtime, _STACK_ITEM_SIZE, texture)
+        return self._apply_picture(item, texture)
 
     @staticmethod
     def _is_blank(pixbuf: GdkPixbuf.Pixbuf) -> bool:
@@ -3221,13 +3260,13 @@ class MyComputerPreviewColumn(Gtk.Box):
         if content_type and content_type.startswith("image/"):
             # The image page is already visible and fills in as soon as its
             # decoded paintable arrives, with no interim icon or spinner.
-            self._load_preview_image()
+            self._load_preview_image(mtime)
         else:
             self.set_preview_slot(PREVIEW_SLOT_ICON)
             self._maybe_load_thumbnail(content_type, mtime)
         self._maybe_load_dimensions(content_type)
 
-    def _load_preview_image(self) -> None:
+    def _load_preview_image(self, mtime: int) -> None:
         """Decode a real local image on a worker thread for the large preview.
 
         The thumbnail factory remains the correct source for list rows and
@@ -3241,23 +3280,27 @@ class MyComputerPreviewColumn(Gtk.Box):
             # location) -- use its file icon as the preview fallback.
             self._show_icon()
             return
-        threading.Thread(target=self._preview_image_worker, args=(path,), daemon=True).start()
+        cached = _get_preview_texture(self.file_uri, mtime, _COLUMN_PREVIEW_IMAGE_SIZE)
+        if cached is not None:
+            self._apply_thumbnail(cached)
+            return
+        threading.Thread(
+            target=self._preview_image_worker, args=(path, self.file_uri, mtime), daemon=True
+        ).start()
 
-    def _preview_image_worker(self, path: str) -> None:
-        try:
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(
-                path,
-                _COLUMN_PREVIEW_IMAGE_SIZE,
-                _COLUMN_PREVIEW_IMAGE_SIZE,
-                True,
-            )
-        except GLib.Error:
+    def _preview_image_worker(self, path: str, uri: str, mtime: int) -> None:
+        pixbuf = _decode_preview_pixbuf(path, _COLUMN_PREVIEW_IMAGE_SIZE)
+        if pixbuf is None:
             # Decode failures fall back from loading to the file icon.
             GLib.idle_add(self._show_icon)
             return
         if self._cancellable.is_cancelled():
             return
-        GLib.idle_add(self._apply_thumbnail, Gdk.Texture.new_for_pixbuf(pixbuf))
+        GLib.idle_add(self._store_preview_image, uri, mtime, Gdk.Texture.new_for_pixbuf(pixbuf))
+
+    def _store_preview_image(self, uri: str, mtime: int, texture: Gdk.Texture) -> int:
+        _cache_preview_texture(uri, mtime, _COLUMN_PREVIEW_IMAGE_SIZE, texture)
+        return self._apply_thumbnail(texture)
 
     def _show_icon(self) -> int:
         if not self._cancellable.is_cancelled():
