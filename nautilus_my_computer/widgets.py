@@ -91,6 +91,8 @@ def _cache_row_thumbnail_texture(uri: str, mtime: int, texture: Gdk.Texture) -> 
 # touched from the main loop. Revisiting a file, or extending a selection by one
 # row (the other front items stay), reuses the texture instead of re-decoding.
 _PREVIEW_TEXTURE_CACHE_MAX_ENTRIES = 16
+
+
 _preview_texture_cache: collections.OrderedDict[tuple[str, int, int], Gdk.Texture] = (
     collections.OrderedDict()
 )
@@ -2943,7 +2945,8 @@ class MyComputerStackPreview(Gtk.Fixed):
             return
         if self._cancellable.is_cancelled():
             return
-        GLib.idle_add(self._store_picture, item, uri, mtime, Gdk.Texture.new_for_pixbuf(pixbuf))
+        texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+        GLib.idle_add(self._store_picture, item, uri, mtime, texture)
 
     def _store_picture(self, item: Gtk.Box, uri: str, mtime: int, texture: Gdk.Texture) -> int:
         _cache_preview_texture(uri, mtime, _PREVIEW_ICON_SIZE, texture)
@@ -2970,7 +2973,8 @@ class MyComputerStackPreview(Gtk.Fixed):
             item.get_first_child().set_visible(True)
         elif not self._cancellable.is_cancelled():
             # Picture sized to the texture itself so the rounded clip and the
-            # shadow follow the real image edges, not the square slot.
+            # shadow follow the real image edges, not the square slot. The
+            # CSS class paints a checkerboard behind transparent pixels.
             picture = Gtk.Picture.new_for_paintable(texture)
             picture.set_halign(Gtk.Align.CENTER)
             picture.set_valign(Gtk.Align.CENTER)
@@ -3302,7 +3306,8 @@ class MyComputerPreviewColumn(Gtk.Box):
             return
         if self._cancellable.is_cancelled():
             return
-        GLib.idle_add(self._store_preview_image, uri, mtime, Gdk.Texture.new_for_pixbuf(pixbuf))
+        texture = Gdk.Texture.new_for_pixbuf(pixbuf)
+        GLib.idle_add(self._store_preview_image, uri, mtime, texture)
 
     def _store_preview_image(self, uri: str, mtime: int, texture: Gdk.Texture) -> int:
         _cache_preview_texture(uri, mtime, _COLUMN_PREVIEW_IMAGE_SIZE, texture)
