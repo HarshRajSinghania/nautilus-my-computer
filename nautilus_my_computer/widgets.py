@@ -73,16 +73,18 @@ _TEXTURE_CACHE_LIMITS = {TEXTURE_ROW: 512, TEXTURE_SINGLE: 16, TEXTURE_STACK: 16
 
 
 class _TextureLane:
-    """One bounded LRU of textures."""
+    """One bounded LRU of (texture, translucent) entries. The translucent flag
+    says the picture really uses its alpha channel (see _pixbuf_alpha_kind);
+    only the stack reads it."""
 
     def __init__(self, limit: int) -> None:
         self._limit = limit
-        self._entries: collections.OrderedDict[tuple[str, int], Gdk.Texture] = (
+        self._entries: collections.OrderedDict[tuple[str, int], tuple[Gdk.Texture, bool]] = (
             collections.OrderedDict()
         )
         self._lock = threading.Lock()
 
-    def get(self, uri: str, mtime: int) -> Gdk.Texture | None:
+    def get(self, uri: str, mtime: int) -> tuple[Gdk.Texture, bool] | None:
         key = (uri, mtime)
         with self._lock:
             entry = self._entries.get(key)
@@ -90,10 +92,10 @@ class _TextureLane:
                 self._entries.move_to_end(key)
             return entry
 
-    def put(self, uri: str, mtime: int, texture: Gdk.Texture) -> None:
+    def put(self, uri: str, mtime: int, texture: Gdk.Texture, translucent: bool = False) -> None:
         key = (uri, mtime)
         with self._lock:
-            self._entries[key] = texture
+            self._entries[key] = (texture, translucent)
             self._entries.move_to_end(key)
             while len(self._entries) > self._limit:
                 self._entries.popitem(last=False)
@@ -105,14 +107,34 @@ class _TextureCache:
     def __init__(self) -> None:
         self._lanes = {kind: _TextureLane(limit) for kind, limit in _TEXTURE_CACHE_LIMITS.items()}
 
-    def get(self, kind: str, uri: str, mtime: int) -> Gdk.Texture | None:
+    def get(self, kind: str, uri: str, mtime: int) -> tuple[Gdk.Texture, bool] | None:
         return self._lanes[kind].get(uri, mtime)
 
-    def put(self, kind: str, uri: str, mtime: int, texture: Gdk.Texture) -> None:
-        self._lanes[kind].put(uri, mtime, texture)
+    def put(
+        self, kind: str, uri: str, mtime: int, texture: Gdk.Texture, translucent: bool = False
+    ) -> None:
+        self._lanes[kind].put(uri, mtime, texture, translucent)
 
 
 _texture_cache = _TextureCache()
+
+
+def _pixbuf_alpha_kind(pixbuf: GdkPixbuf.Pixbuf) -> str:
+    """Classify a decoded picture as "opaque", "translucent" or "blank".
+
+    has-alpha is only the cheap first gate: many files carry an alpha channel they
+    never use, so a flagged picture still has its alpha bytes checked. An 8-bit
+    RGBA pixbuf has no row padding (rowstride == 4 * width), so the whole alpha
+    plane is one strided slice and two C-speed counts, no Python loop. "blank"
+    means fully transparent: nothing to show. Worker-thread safe."""
+    if not pixbuf.get_has_alpha():
+        return "opaque"
+    alpha = pixbuf.get_pixels()[3::4]
+    if alpha.count(b"\xff") == len(alpha):
+        return "opaque"
+    if alpha.count(b"\x00") == len(alpha):
+        return "blank"
+    return "translucent"
 
 
 def _decode_preview_pixbuf(path: str, size: int) -> GdkPixbuf.Pixbuf | None:
@@ -1413,7 +1435,8 @@ class MyComputerColumnRow(Gtk.Box):
         # thread and swapped in once ready, never on the main loop. Folders
         # never go through this: their icon is already the real folder icon.
         if not item.is_dir and item.content_type and _thumb_factory is not None:
-            cached_texture = _texture_cache.get(TEXTURE_ROW, item.uri, item.mtime)
+            cached = _texture_cache.get(TEXTURE_ROW, item.uri, item.mtime)
+            cached_texture = cached[0] if cached is not None else None
             if cached_texture is not None:
                 self.set_thumbnail(cached_texture)
                 return
@@ -2928,7 +2951,7 @@ class MyComputerStackPreview(Gtk.Fixed):
         mtime = info.get_attribute_uint64("time::modified")
         cached = _texture_cache.get(TEXTURE_STACK, uri, mtime)
         if cached is not None:
-            self._apply_picture(item, cached)
+            self._apply_picture(item, *cached)
             return True
         threading.Thread(
             target=self._picture_worker, args=(item, path, uri, mtime), daemon=True
@@ -2943,46 +2966,46 @@ class MyComputerStackPreview(Gtk.Fixed):
         pixbuf = _decode_preview_pixbuf(thumb_path or path, _PREVIEW_ICON_SIZE)
         if pixbuf is None and thumb_path:
             pixbuf = _decode_preview_pixbuf(path, _PREVIEW_ICON_SIZE)
-        if pixbuf is None or self._is_blank(pixbuf):
+        kind = _pixbuf_alpha_kind(pixbuf) if pixbuf is not None else "blank"
+        if kind == "blank":
             GLib.idle_add(self._apply_picture, item, None)
             return
         if self._cancellable.is_cancelled():
             return
         texture = Gdk.Texture.new_for_pixbuf(pixbuf)
-        GLib.idle_add(self._store_picture, item, uri, mtime, texture)
+        GLib.idle_add(self._store_picture, item, uri, mtime, texture, kind == "translucent")
 
-    def _store_picture(self, item: Gtk.Box, uri: str, mtime: int, texture: Gdk.Texture) -> int:
-        _texture_cache.put(TEXTURE_STACK, uri, mtime, texture)
-        return self._apply_picture(item, texture)
+    def _store_picture(
+        self, item: Gtk.Box, uri: str, mtime: int, texture: Gdk.Texture, translucent: bool
+    ) -> int:
+        _texture_cache.put(TEXTURE_STACK, uri, mtime, texture, translucent)
+        return self._apply_picture(item, texture, translucent)
 
-    @staticmethod
-    def _is_blank(pixbuf: GdkPixbuf.Pixbuf) -> bool:
-        """True when the decoded picture is fully transparent (nothing to show)."""
-        if not pixbuf.get_has_alpha():
-            return False
-        pixels = pixbuf.get_pixels()
-        stride = pixbuf.get_rowstride()
-        width = pixbuf.get_width()
-        channels = pixbuf.get_n_channels()
-        for y in range(pixbuf.get_height()):
-            start = y * stride
-            if any(pixels[start + channels - 1 : start + width * channels : channels]):
-                return False
-        return True
-
-    def _apply_picture(self, item: Gtk.Box, texture: Gdk.Texture | None) -> int:
+    def _apply_picture(
+        self, item: Gtk.Box, texture: Gdk.Texture | None, translucent: bool = False
+    ) -> int:
         if texture is None:
             # Decode failed or came out blank: fall back to the file icon.
             item.get_first_child().set_visible(True)
         elif not self._cancellable.is_cancelled():
-            # Picture sized to the texture itself so the rounded clip and the
-            # shadow follow the real image edges, not the square slot.
-            picture = Gtk.Picture.new_for_paintable(texture)
+            # Sized to the texture itself so the rounded clip and the shadow
+            # follow the real image edges, not the square slot. Cut-out images
+            # (real transparency) use a Gtk.Image instead: its icon shadow is
+            # cast from the alpha shape, where a box-shadow would outline the
+            # bounding box.
+            if translucent:
+                picture = Gtk.Image.new_from_paintable(texture)
+                # GtkImage ignores a paintable's own size and falls back to the
+                # icon size (16 px): pin it to the texture's longest side.
+                picture.set_pixel_size(max(texture.get_width(), texture.get_height()))
+                picture.add_css_class("mc-stack-icon")
+            else:
+                picture = Gtk.Picture.new_for_paintable(texture)
+                picture.set_overflow(Gtk.Overflow.HIDDEN)
+                picture.add_css_class("mc-stack-image")
             picture.set_halign(Gtk.Align.CENTER)
             picture.set_valign(Gtk.Align.CENTER)
             picture.set_hexpand(True)
-            picture.set_overflow(Gtk.Overflow.HIDDEN)
-            picture.add_css_class("mc-stack-image")
             item.remove(item.get_first_child())
             item.append(picture)
         return GLib.SOURCE_REMOVE
@@ -3294,7 +3317,7 @@ class MyComputerPreviewColumn(Gtk.Box):
             return
         cached = _texture_cache.get(TEXTURE_SINGLE, self.file_uri, mtime)
         if cached is not None:
-            self._apply_thumbnail(cached)
+            self._apply_thumbnail(cached[0])
             return
         threading.Thread(
             target=self._preview_image_worker, args=(path, self.file_uri, mtime), daemon=True
