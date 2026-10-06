@@ -2931,7 +2931,13 @@ class MyComputerStackPreview(Gtk.Fixed):
         return True
 
     def _picture_worker(self, item: Gtk.Box, path: str, uri: str, mtime: int) -> None:
-        pixbuf = _decode_preview_pixbuf(path, _STACK_ITEM_SIZE)
+        # GNOME's own 256 px thumbnail (kept current by mtime, shared with
+        # Nautilus) is far cheaper to read than the original; never generated
+        # here, so no thumbnailer subprocess. Without one, decode the original.
+        thumb_path = _thumb_factory.lookup(uri, mtime) if _thumb_factory is not None else None
+        pixbuf = _decode_preview_pixbuf(thumb_path or path, _STACK_ITEM_SIZE)
+        if pixbuf is None and thumb_path:
+            pixbuf = _decode_preview_pixbuf(path, _STACK_ITEM_SIZE)
         if pixbuf is None or self._is_blank(pixbuf):
             GLib.idle_add(self._apply_picture, item, None)
             return
