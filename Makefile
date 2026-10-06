@@ -62,7 +62,7 @@ install: build
 	@for f in $(PKG_DIR)/*.py; do \
 		install -Dm644 "$$f" "$(NAUTILUS_EXT_DIR)/$$f"; \
 	done
-	@for f in $(PKG_DIR)/icons/*.svg; do \
+	@for f in $(PKG_DIR)/icons/*.svg $(PKG_DIR)/assets/*.png; do \
 		install -Dm644 "$$f" "$(NAUTILUS_EXT_DIR)/$$f"; \
 	done
 	install -Dm644 $(SCHEMA_FILE) "$(SCHEMA_DIR)/$(SCHEMA_FILE)"
