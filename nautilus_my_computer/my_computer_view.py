@@ -565,33 +565,37 @@ _CSS = b"""
 .mc-row-thumbnail {
     border-radius: 3px;
 }
-/* GtkListView's per-item "row" node (GtkListItemWidget) normally applies the
-   sidebar's horizontal padding around its child, same as GtkListBoxRow did
-   pre-#139-refactor. Move that inset into the Miller child box
-   (.mc-column-row-content, see widgets.MyComputerColumnRow) so it fills the
-   outer row allocation exactly, while its contents retain the native 8px
-   inset. Rows also touch (no sidebar margin between them), like the native
-   list view, so a multi-selection reads as one continuous band. */
+/* Column rows follow Nautilus' list view (style.css: row radius 9px), not the
+   places sidebar, so the list does not carry .navigation-sidebar. GtkListView's
+   per-item "row" node (GtkListItemWidget) only supplies the radius and the
+   hover/selected layers; the inset and height live in .mc-column-row-content
+   (see widgets.MyComputerColumnRow) so it fills the row allocation exactly.
+   Rows touch (no gap between them), like the native list view, so a
+   multi-selection reads as one continuous band. 6px list padding and 6px
+   content padding keep a 24px icon slot on a 36px row. */
+.mc-column-list {
+    padding: 6px;
+}
 .mc-column-list > row {
-    padding-left: 0;
-    padding-right: 0;
-    margin-top: 0;
-    margin-bottom: 0;
+    padding: 0;
+    border-radius: 9px;
 }
 .mc-column-list > row > .mc-column-row-content {
-    padding-left: 8px;
-    padding-right: 8px;
+    padding: 6px 8px;
 }
 .mc-column-list > row > .mc-column-row-content.mc-row-cut {
     opacity: 0.50;
 }
-/* Miller columns reuse .navigation-sidebar for its rounded-corner selection
-   shape (see widgets.py's MyComputerColumn), but a sidebar's native
-   :selected fill is a neutral grey, not accent -- correct for a places
-   sidebar, wrong for a browsing view where the last-selected row (folder or
-   file) should read like a normal content-view selection. Re-tint just the
-   selected state to the native accent tokens, keep everything else
-   (hover, shape, spacing) untouched.
+/* Drop feedback belongs on the whole row, as in Nautilus' list view. */
+.mc-column-list > row:drop(active) {
+    --accent-bg-color: var(--diskinfo-selection-grey);
+}
+.mc-column-list > row > .mc-column-row-content:drop(active) {
+    box-shadow: none;
+}
+/* The last-selected row (folder or file) of the active column reads like a
+   normal content-view selection: re-tint just the selected state to the
+   native accent tokens, keep everything else (hover, shape) untouched.
 
    Scoped to .mc-column-view-highlighted-row, not plain :selected: only the
    column that was last clicked (column_view.py's tracked focused_index,
@@ -605,7 +609,7 @@ _CSS = b"""
    names the effect this rule produces, not the widget it's attached to. */
 /* The selection fill is painted by our row content, not by Nautilus's row
    node, so adjacent selected rows can drop their shared corners (Finder-style
-   blocks, see MyComputerColumn._apply_row_join). 6px is the sidebar row radius. */
+   blocks, see MyComputerColumn._apply_row_join). 9px is the row radius. */
 .mc-column-list > row:selected,
 .mc-column-list > row:selected:hover {
     background-color: transparent;
@@ -613,7 +617,7 @@ _CSS = b"""
 .mc-column-list > row:selected > .mc-column-row-content,
 .mc-column-list > row > .mc-column-row-content.mc-row-path {
     background-color: alpha(currentColor, 0.1);
-    border-radius: 6px;
+    border-radius: 9px;
 }
 .mc-column-list > row:selected > .mc-column-row-content.mc-join-above {
     border-top-left-radius: 0;

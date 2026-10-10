@@ -211,7 +211,7 @@ from nautilus_my_computer.common import (
     _resolve_custom_gicon,
     _set_regular_icon,
 )
-from nautilus_my_computer.components import set_row_active
+from nautilus_my_computer.components import set_row_drop_active
 
 
 class MyComputerDiskCard(Gtk.Box):
@@ -1263,10 +1263,8 @@ class MyComputerColumnRow(Gtk.Box):
         self._is_cut = False
         self._thumb_cancellable: Gio.Cancellable | None = None
 
-        # No manual margin here -- .navigation-sidebar > row already carries
-        # its own native inset (padding: 0 9px, margin-top: 3px between rows;
-        # see ~/Downloads/nautilus/src/resources/style.css and gtk.css). A box
-        # margin on top of that native row padding double-inset the content.
+        # Inset and height come from the .mc-column-row-content CSS rule, so the
+        # box itself carries no margin.
         self.add_css_class("mc-column-row-content")
         self.set_hexpand(True)
         self.set_vexpand(True)
@@ -1480,9 +1478,9 @@ class MyComputerColumnRow(Gtk.Box):
         # and selection layers retain their expected stacking order.
         cr = snapshot.append_cairo(bounds)
         cr.set_source_rgba(color.red, color.green, color.blue, color.alpha * 0.07)
-        # Libadwaita's .navigation-sidebar > row rule supplies the visible
-        # row radius (9px). Keep this snapshot path in sync with that native
-        # rule because GTK does not expose a computed CSS radius to Python.
+        # Our .mc-column-list > row rule supplies the visible row radius
+        # (9px, as in Nautilus' list view). Keep this snapshot path in sync with
+        # it because GTK does not expose a computed CSS radius to Python.
         self._append_rounded_rectangle(cr, 0.0, 0.0, width, height, 9.0)
         cr.fill()
         del cr
@@ -2037,17 +2035,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         factory.connect("teardown", self._on_factory_teardown)
 
         self.list_view = Gtk.ListView(model=self._selection, factory=factory)
-        # Same style class the native Nautilus sidebar (a Gtk.ListBox) carries:
-        # gives rows the sidebar's rounded-corner selection shape and
-        # theme-aware hover highlight. GtkListView's per-item container uses
-        # the same "row" CSS node name as GtkListBox specifically for this
-        # kind of style compatibility. Its native :selected fill is a neutral
-        # grey (sidebar convention, not accent) -- .mc-column-list below
-        # re-tints just the selected state to accent (see my_computer_view.py's
-        # _CSS), keeping the sidebar's shape/hover but with content-view-style
-        # selection color, since this is a Miller *browsing* view, not a
-        # places sidebar.
-        self.list_view.add_css_class("navigation-sidebar")
+        # Not .navigation-sidebar: column rows follow Nautilus' list view, see the
+        # .mc-column-list rules in my_computer_view.py's _CSS.
         self.list_view.add_css_class("mc-column-list")
         # Deliberately NOT set_single_click_activate(True): on Gtk.ListView
         # (unlike Gtk.ListBox's activate-on-single-click) that flag also makes
@@ -2188,7 +2177,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         action = self._drop_action(target, uri) if uri else 0
         row_node = row.row_node()
         if row_node is not None:
-            set_row_active(row_node, bool(action))
+            set_row_drop_active(row_node, bool(action))
         if action and self._ext._nautilus_prefs.open_folder_on_dnd_hover():
             self._arm_hover_open(row)
         else:
@@ -2198,7 +2187,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
     def _on_row_drop_leave(self, _target, row: "MyComputerColumnRow") -> None:
         row_node = row.row_node()
         if row_node is not None:
-            set_row_active(row_node, False)
+            set_row_drop_active(row_node, False)
         self._cancel_hover_open()
 
     def _on_row_drop(self, target, value, _x, _y, row: "MyComputerColumnRow") -> bool:

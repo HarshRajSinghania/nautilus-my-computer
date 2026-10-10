@@ -25,6 +25,15 @@ def set_row_active(row: Gtk.Widget, active: bool) -> None:
         row.unset_state_flags(Gtk.StateFlags.ACTIVE)
 
 
+def set_row_drop_active(row: Gtk.Widget, active: bool) -> None:
+    """Apply or clear GTK's drop-target styling on a row-like widget, as
+    NautilusNameCell does on the list row of a valid folder target."""
+    if active:
+        row.set_state_flags(Gtk.StateFlags.DROP_ACTIVE, False)
+    else:
+        row.unset_state_flags(Gtk.StateFlags.DROP_ACTIVE)
+
+
 def show_rename_popover(parent: Gtk.Widget, uri: str, on_renamed, *, item_kind: str) -> None:
     """Show the Nautilus-style single-item rename editor.
 
