@@ -1604,7 +1604,7 @@ class _ColumnViewHost:
         new_column: Gtk.Widget | None = None
         preview_replaced = False
         preview_added = False
-        chain_update = "rebuild"
+        chain_update = "truncate"
         if already_open:
             fits = self._new_content_fits(self.columns[index + 1].width)
             for stale_column in stale[1:]:
@@ -1687,8 +1687,8 @@ class _ColumnViewHost:
             self._append_column_to_chain(new_column)
         elif chain_update == "replace_preview":
             self._replace_preview_in_chain()
-        elif chain_update == "rebuild":
-            self._rebuild_chain()
+        elif chain_update == "truncate":
+            self._truncate_chain(new_column)
         if new_column is not None:
             self._fade_in(new_column)
         if preview_replaced:
@@ -2317,6 +2317,41 @@ class _ColumnViewHost:
         paned = self._make_paned(column, self.preview_column, len(self.columns) - 1)
         tail.set_end_child(paned)
         self.paneds.insert(0, paned)
+        self._sync_root_width()
+
+    def _truncate_chain(self, new_column: Gtk.Widget | None) -> None:
+        """Cut the chain after the kept columns without detaching them.
+
+        Activating a row that already has deeper columns open only changes
+        what follows that row's column. Rebuilding the whole paned tree for
+        it unmaps every ListView, which GTK reports to each row's DropTarget
+        as a ``leave`` (clearing the drag outline under a stationary
+        pointer). Only the stale tail is detached here; ``self.columns``
+        already holds the final list.
+        """
+        keep = len(self.columns) - (1 if new_column is not None else 0)
+        paned = getattr(self, "root", None)
+        for _depth in range(keep - 1):
+            if not isinstance(paned, Gtk.Paned):
+                break
+            paned = paned.get_end_child()
+        if keep < 1 or not isinstance(paned, Gtk.Paned):
+            self._rebuild_chain()
+            return
+        old_tail = paned.get_end_child()
+        paned.set_end_child(None)
+        if old_tail is not None:
+            self._detach_paned_children(old_tail)
+        if new_column is None:
+            paned.set_end_child(self.preview_column)
+        else:
+            paned.set_end_child(self._make_paned(new_column, self.preview_column, keep))
+        chain = []
+        node = self.root
+        while isinstance(node, Gtk.Paned):
+            chain.append(node)
+            node = node.get_end_child()
+        self.paneds = chain[::-1]
         self._sync_root_width()
 
     def _replace_preview_in_chain(self) -> None:
