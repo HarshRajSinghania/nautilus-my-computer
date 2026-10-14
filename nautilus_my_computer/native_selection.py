@@ -157,6 +157,12 @@ class NativeBridge:
             _log(f"native_selection: carry {len(uris)} via open-location {folder_uri!r}")
             self._slot.activate_action("slot.open-location", GLib.Variant("s", folder_uri))
 
+    def expect(self, folder_uri: str, uris: list[str]) -> None:
+        """Column View is about to navigate the slot to `folder_uri` and wants
+        `uris` selected there. Applied after the load, on top of Nautilus's own
+        default (it selects the folder it came from when going up)."""
+        self._set_pending(folder_uri, uris)
+
     def _set_pending(self, folder_uri: str, uris: list[str]) -> None:
         self._pending.set(folder_uri, (_norm(u) for u in uris))
         self._try_apply(final=False)

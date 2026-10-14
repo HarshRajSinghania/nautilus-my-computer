@@ -12,6 +12,7 @@ gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
 from nautilus_my_computer import bookmarks, common, components, preferred_folders
+from nautilus_my_computer import uris as uri_utils
 from nautilus_my_computer.common import (
     _COLUMN_MAX_WIDTH,
     _COLUMN_PREVIEW_WIDTH,
@@ -642,6 +643,11 @@ class _ColumnViewHost:
         deepest = self.columns[-1]
         if not self._native_bridge._shows(deepest.folder_uri):
             return
+        if not uris and self.focused_index != len(self.columns) - 1:
+            # Echo of our own drill-down: the new deepest column is empty, so
+            # adopting would only steal the accent and selection from the
+            # column the user just clicked in.
+            return
         self._adopting_native = True
         try:
             self._activate_column(deepest)
@@ -739,7 +745,21 @@ class _ColumnViewHost:
                 return
             widget = widget.get_parent()
         self._cancel_row_commit()
+        self._end_path_at(column)
+
+    def _end_path_at(self, column) -> None:
+        """Finder-style: the path ends at column. Deeper columns close and the
+        real location follows, as a normal navigation (Back returns to the
+        deeper folder). On the deepest column only the selection clears."""
         self._clear_selection_keep_chain(column)
+        idx = self.columns.index(column)
+        if idx == len(self.columns) - 1:
+            return
+        self._truncate_chain_to(idx)
+        # Nautilus selects the folder it came from when it goes up; the click
+        # ended the path here, so the column's own selection (none) wins.
+        self._native_bridge.expect(column.folder_uri, column.selected_uris())
+        self._sync_slot_location(column.folder_uri, restore_keyboard_focus=True)
 
     @staticmethod
     def _has_selection_modifier(gesture: Gtk.GestureClick) -> bool:
@@ -1174,13 +1194,8 @@ class _ColumnViewHost:
 
     def _on_item_renamed(self, source_column: Gtk.Widget, old_uri: str, new_uri: str) -> None:
         """Apply a completed shared rename operation to the Miller chain."""
-        old_prefix = old_uri.rstrip("/")
-        new_prefix = new_uri.rstrip("/")
         for open_column in self.columns:
-            if open_column.folder_uri.rstrip("/") == old_prefix:
-                open_column.folder_uri = new_uri
-            elif open_column.folder_uri.startswith(f"{old_prefix}/"):
-                open_column.folder_uri = f"{new_prefix}{open_column.folder_uri[len(old_prefix) :]}"
+            open_column.folder_uri = uri_utils.rebase(open_column.folder_uri, old_uri, new_uri)
 
         # Re-enumerate the parent column so it displays the new row name.
         # Descendant columns keep their contents but their location URIs
@@ -1542,9 +1557,7 @@ class _ColumnViewHost:
         # that's already sitting there correctly. Reuse it, but anything
         # beyond it is still a stale, no-longer-relevant selection and gets
         # collapsed exactly like the non-reuse case below.
-        already_open = (
-            row.is_dir and stale and stale[0].folder_uri.rstrip("/") == row.uri.rstrip("/")
-        )
+        already_open = row.is_dir and stale and uri_utils.same_uri(stale[0].folder_uri, row.uri)
 
         new_column: Gtk.Widget | None = None
         preview_replaced = False
@@ -1606,6 +1619,14 @@ class _ColumnViewHost:
                 self._set_preview(row.uri)
                 preview_replaced = True
                 preview_added = True
+                if stale:
+                    # The path now ends at this column: the location follows.
+                    # Nautilus selects the folder it came from; the file just
+                    # clicked must stay the selection.
+                    self._native_bridge.expect(column.folder_uri, column.selected_uris())
+                    self._sync_slot_location(
+                        column.folder_uri, restore_keyboard_focus=restore_keyboard_focus
+                    )
                 if not stale:
                     chain_update = "replace_preview"
 
@@ -1750,9 +1771,14 @@ class _ColumnViewHost:
             return
 
         _log("sync_to_uri: truncating to already-open ancestor")
-        # A genuinely external navigation (pathbar chip, sidebar, back/
-        # forward) -- any keyboard commit still waiting out its debounce
-        # targets a column this is about to collapse or replace.
+        self._truncate_chain_to(idx)
+
+    def _truncate_chain_to(self, idx: int) -> None:
+        """Collapse every column deeper than idx and leave idx as the deepest,
+        keeping the columns up to it untouched (no re-enumeration, no lost
+        widths)."""
+        # Any keyboard commit still waiting out its debounce
+        # targets a column this is about to collapse.
         self._cancel_row_commit()
         for stale in self.columns[idx + 1 :]:
             stale.destroy_enumeration()
