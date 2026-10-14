@@ -2607,10 +2607,11 @@ class MyComputerColumn(Gtk.ScrolledWindow):
 
     def connect_selection_changed(self, callback) -> None:
         """Call callback() after any change of this column's row selection."""
+        if not self._selection_callbacks:
+            self._selection.connect(
+                "selection-changed", lambda *_args: self._notify_selection_changed()
+            )
         self._selection_callbacks.append(callback)
-        self._selection.connect(
-            "selection-changed", lambda *_args: self._notify_selection_changed()
-        )
 
     def _notify_selection_changed(self) -> None:
         """Tell listeners the selection changed. Silent during a reload, whose
