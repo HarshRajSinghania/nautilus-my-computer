@@ -1072,7 +1072,11 @@ class _ColumnViewHost:
         """
         if gesture.get_current_button() != Gdk.BUTTON_PRIMARY:
             return
-        if not (0 <= x < row.get_width() and 0 <= y < row.get_height()):
+        # The press already landed on this row (the gesture grabs the sequence),
+        # and GTK's own list item has already selected it. A few pixels of hand
+        # drift before release is still a click; only a drag-sized move is not.
+        slop = Gtk.Settings.get_default().get_property("gtk-dnd-drag-threshold")
+        if not (-slop <= x < row.get_width() + slop and -slop <= y < row.get_height() + slop):
             # Released off the row it was pressed on: not a click. Deny rather
             # than just return, so the sequence ends now instead of lingering
             # into the next press (see _on_row_pressed's DENIED branch).
