@@ -15,6 +15,7 @@ gi.require_version("GLib", "2.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gio, GLib, Gtk
 
+from nautilus_my_computer import uris as uri_utils
 from nautilus_my_computer.common import (
     _,
     _all_widgets,
@@ -259,7 +260,7 @@ def add_preferred(gsettings, uri: str) -> None:
     if not gsettings:
         return
     entries = get_preferred_entries(gsettings)
-    uri = uri.rstrip("/")
+    uri = uri_utils.normalize(uri)
     # A URI that matches a logical token's fixed location (home, recent,
     # starred, network) must store as that token, not the raw URI, so it
     # keeps the translated label and token icon instead of GVfs' generic
@@ -269,7 +270,7 @@ def add_preferred(gsettings, uri: str) -> None:
     # users' home dirs, so they are intentionally excluded here.
     for token, meta in PREFERRED_TOKENS.items():
         token_uri = meta.get("uri")
-        if token_uri is not None and uri == token_uri().rstrip("/"):
+        if token_uri is not None and uri_utils.same_uri(uri, token_uri()):
             uri = token
             break
     if uri not in entries:
@@ -297,9 +298,9 @@ def save_order(gsettings, keys: list[str]) -> None:
 
 def preferred_for_uri(gsettings, uri: str) -> "PreferredFolder | None":
     """Look up the PreferredFolder whose nav_uri matches uri, if any."""
-    norm = uri.rstrip("/")
+    norm = uri_utils.normalize(uri)
     for folder in load_preferred_folders(gsettings):
-        if folder.nav_uri.rstrip("/") == norm:
+        if uri_utils.normalize(folder.nav_uri) == norm:
             return folder
     return None
 

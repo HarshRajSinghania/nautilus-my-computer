@@ -176,6 +176,7 @@ except (ValueError, ImportError):
     GstPbutils = None
 
 from nautilus_my_computer import selection
+from nautilus_my_computer import uris as uri_utils
 from nautilus_my_computer.common import (
     _CARD_WIDTH,
     _COLUMN_MIN_WIDTH,
@@ -2281,7 +2282,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         self._apply_row_join(row)
 
     def _is_path_item(self, item) -> bool:
-        return self.path_uri is not None and item.uri.rstrip("/") == self.path_uri.rstrip("/")
+        return self.path_uri is not None and uri_utils.same_uri(item.uri, self.path_uri)
 
     def set_path_uri(self, uri: str | None) -> None:
         """Set which row the Miller path runs through. The comparison is made
@@ -2564,9 +2565,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
             self._on_loaded(self)
 
     def _index_for_uri(self, uri: str) -> int | None:
-        norm = uri.rstrip("/")
         for i in range(self._store.get_n_items()):
-            if self._store.get_item(i).uri.rstrip("/") == norm:
+            if uri_utils.same_uri(self._store.get_item(i).uri, uri):
                 return i
         return None
 
