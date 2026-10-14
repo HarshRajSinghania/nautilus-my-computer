@@ -481,6 +481,11 @@ class _ColumnViewHost:
         # late location-change echo can steal GTK focus after the bounded
         # frame retry has ended, so remember which echo should restore it.
         self._pending_focus_uri: str | None = None
+        # True from a drag-hover folder open until the next real click or key
+        # navigation. Only the dragged selection may read blue while files are
+        # being dragged, so path marks are hidden and the active column keeps
+        # its selection.
+        self._dnd_hover = False
 
         scroller = Gtk.ScrolledWindow()
         # Vertical NEVER makes this scroller's height follow the canvas's
@@ -983,6 +988,7 @@ class _ColumnViewHost:
         # The pointer takes over from here: a keyboard commit still waiting
         # out its debounce would otherwise land on top of this click.
         self._cancel_row_commit()
+        self._dnd_hover = False
         button = gesture.get_current_button()
         if button == Gdk.BUTTON_MIDDLE and n_press == 1:
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
@@ -1561,7 +1567,12 @@ class _ColumnViewHost:
         return column.with_selected_row(lambda row: self._show_rename_popover(column, row))
 
     def _on_real_row_activated(
-        self, column: Gtk.Widget, row: Gtk.Widget, *, restore_keyboard_focus: bool = False
+        self,
+        column: Gtk.Widget,
+        row: Gtk.Widget,
+        *,
+        restore_keyboard_focus: bool = False,
+        dnd_hover: bool = False,
     ) -> None:
         # Single-click navigation. Activating a row always replaces the entire
         # deeper chain to the right of its column: cancel and drop every column
@@ -1569,13 +1580,15 @@ class _ColumnViewHost:
         # The trailing preview width is derived from PREVIEW_WIDTH plus any
         # available viewport slack, so it is not tracked per-instance.
         index = self.columns.index(column)
+        self._dnd_hover = dnd_hover
         # Read before any mutation below (self.focused_index still holds the
         # previously-focused column, see col_nav_direction).
         direction = col_nav_direction(self.focused_index, index)
         _log(f"_on_real_row_activated: direction={direction}")
         # The click landed in this column -- it becomes the focused one for
         # subsequent arrow-key nav ("focus follows last selection").
-        self.focused_index = index
+        if not dnd_hover:
+            self.focused_index = index
         stale = self.columns[index + 1 :]
         # Clicking a folder row that's already open one column over (its
         # child column exists and shows exactly this folder) is a no-op as
@@ -1659,6 +1672,7 @@ class _ColumnViewHost:
                 if not stale:
                     chain_update = "replace_preview"
 
+        self.focused_index = min(self.focused_index, len(self.columns) - 1)
         self._apply_path_highlights()
         self._apply_focused_column_style()
         if direction == NAV_UP:
@@ -1878,12 +1892,14 @@ class _ColumnViewHost:
         falls back to the path mark and can never be a copy, trash or drag
         source."""
         for i, col in enumerate(self.columns):
-            if i + 1 < len(self.columns):
+            if self._dnd_hover:
+                path_uri = None
+            elif i + 1 < len(self.columns):
                 path_uri = self.columns[i + 1].folder_uri
             else:
                 path_uri = self.preview_column.file_uri or None
             col.set_path_uri(path_uri)
-            if i != self.focused_index:
+            if i != self.focused_index and not self._dnd_hover:
                 col.clear_selection()
 
     def _activate_column(self, column) -> None:

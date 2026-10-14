@@ -2245,7 +2245,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         self._hover_timer = 0
         self._hover_row = None
         if row is not None and row.is_dir:
-            self._on_row_activated_internal(row)
+            self._on_row_activated(self, row, dnd_hover=True)
         return GLib.SOURCE_REMOVE
 
     def _on_row_drag_prepare(self, _source, _x, _y, row: "MyComputerColumnRow"):
