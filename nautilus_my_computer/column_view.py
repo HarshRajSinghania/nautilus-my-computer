@@ -483,9 +483,11 @@ class _ColumnViewHost:
         self._pending_focus_uri: str | None = None
         # True from a drag-hover folder open until the next real click or key
         # navigation. Only the dragged selection may read blue while files are
-        # being dragged, so path marks are hidden and the active column keeps
-        # its selection.
+        # being dragged, so the hovered column's path mark is hidden and the
+        # active column keeps its selection. Marks of the columns before the
+        # hovered one stay (_dnd_hover_index).
         self._dnd_hover = False
+        self._dnd_hover_index = 0
 
         scroller = Gtk.ScrolledWindow()
         # Vertical NEVER makes this scroller's height follow the canvas's
@@ -1581,6 +1583,7 @@ class _ColumnViewHost:
         # available viewport slack, so it is not tracked per-instance.
         index = self.columns.index(column)
         self._dnd_hover = dnd_hover
+        self._dnd_hover_index = index
         # Read before any mutation below (self.focused_index still holds the
         # previously-focused column, see col_nav_direction).
         direction = col_nav_direction(self.focused_index, index)
@@ -1892,7 +1895,7 @@ class _ColumnViewHost:
         falls back to the path mark and can never be a copy, trash or drag
         source."""
         for i, col in enumerate(self.columns):
-            if self._dnd_hover:
+            if self._dnd_hover and i >= self._dnd_hover_index:
                 path_uri = None
             elif i + 1 < len(self.columns):
                 path_uri = self.columns[i + 1].folder_uri
