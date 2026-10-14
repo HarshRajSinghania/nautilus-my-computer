@@ -1769,25 +1769,65 @@ _SORT_KEY_BUILDERS = {
 }
 
 
+class _DisplaySelection(GObject.Object, Gio.ListModel, Gtk.SelectionModel):
+    """Selection model that only displays. GTK's list items select the pressed
+    row on press (before a release decides it was a click), so the columns'
+    selection must be unwritable by GTK: every select/unselect vfunc keeps its
+    default and returns False. Only `show()` changes what is selected, and our
+    own input paths are the only callers (#189)."""
+
+    def __init__(self, store: Gio.ListStore) -> None:
+        super().__init__()
+        self._store = store
+        self._shown: frozenset[str] = frozenset()
+        store.connect("items-changed", lambda _s, pos, rem, add: self.items_changed(pos, rem, add))
+
+    def do_get_item_type(self):
+        return self._store.get_item_type()
+
+    def do_get_n_items(self):
+        return self._store.get_n_items()
+
+    def do_get_item(self, position):
+        return self._store.get_item(position)
+
+    def do_is_selected(self, position):
+        item = self._store.get_item(position)
+        return item is not None and item.uri in self._shown
+
+    def do_get_selection_in_range(self, position, n_items):
+        bits = Gtk.Bitset.new_empty()
+        for i in range(position, position + n_items):
+            if self.do_is_selected(i):
+                bits.add(i)
+        return bits
+
+    def show(self, uris: frozenset[str]) -> None:
+        """Replace the displayed selection and announce it once."""
+        if uris == self._shown:
+            return
+        self._shown = uris
+        n = self._store.get_n_items()
+        if n:
+            self.selection_changed(0, n)
+
+
 class ColumnSelection:
     """Selection state of one Miller column. The rules live in selection.py and
-    work on URIs; this class holds the current `Selection`, projects it onto
-    the Gtk.MultiSelection over the row store in one set_selection call, and
-    reads GTK-originated changes back. Every selection change in a column goes
-    through this object, so Ctrl/Shift multi-selection (#178) and drag and drop
-    (#154) share one set of rules."""
+    work on URIs; this class holds the current `Selection` and shows it through
+    a display-only model over the row store, so GTK can never change it. Every
+    selection change in a column goes through this object, so Ctrl/Shift
+    multi-selection (#178) and drag and drop (#154) share one set of rules."""
 
     def __init__(self, store: Gio.ListStore) -> None:
         self._store = store
-        self.model = Gtk.MultiSelection(model=store)
+        self.model = _DisplaySelection(store)
         self._sel = selection.Selection()
-        self._applying = False
         # A reload empties the store before the new listing arrives. That gap
-        # is not the user deselecting, so GTK-originated changes are ignored
-        # until end_reload/abort_reload of the current generation.
+        # is not the user deselecting, so listeners stay silent until
+        # end_reload/abort_reload of the current generation.
         self._reload_gen = 0
         self._reloading = False
-        self.model.connect("selection-changed", self._on_changed)
 
     @property
     def reloading(self) -> bool:
@@ -1824,33 +1864,17 @@ class ColumnSelection:
         return [self._store.get_item(i).uri for i in range(self._store.get_n_items())]
 
     def _apply(self, sel: "selection.Selection") -> None:
-        """Make `sel` the selection and project it onto the model at once, so
-        no transient empty or partial state fires the selection callbacks."""
+        """Make `sel` the selection and show it at once, so no transient empty
+        or partial state fires the selection callbacks."""
         self._sel = sel
-        n = self._store.get_n_items()
-        selected = Gtk.Bitset.new_empty()
-        for i in range(n):
-            if self._store.get_item(i).uri in sel.uris:
-                selected.add(i)
-        self._applying = True
-        try:
-            self.model.set_selection(selected, Gtk.Bitset.new_range(0, n))
-        finally:
-            self._applying = False
-
-    def _on_changed(self, model, position: int, n_items: int) -> None:
-        """A selection change GTK made itself (it selects the pressed row on
-        press, before any release decides it was a click): undo it. The model is
-        a display of `_sel`, which only our own input paths change, so a press
-        that turns into a drag or a drift never leaves a second selected row."""
-        if self._applying or self._reloading:
-            return
-        if frozenset(self.uris()) != self._sel.uris:
-            self._apply(self._sel)
+        self.model.show(sel.uris)
 
     def positions(self) -> list[int]:
-        bitset = self.model.get_selection()
-        return [bitset.get_nth(i) for i in range(bitset.get_size())]
+        return [
+            i
+            for i in range(self._store.get_n_items())
+            if self._store.get_item(i).uri in self._sel.uris
+        ]
 
     def items(self) -> list["_ColumnRowItem"]:
         return [self._store.get_item(i) for i in self.positions()]
@@ -1859,7 +1883,7 @@ class ColumnSelection:
         return [item.uri for item in self.items()]
 
     def count(self) -> int:
-        return self.model.get_selection().get_size()
+        return len(self.positions())
 
     def contains(self, item) -> bool:
         return any(item is other for other in self.items())
