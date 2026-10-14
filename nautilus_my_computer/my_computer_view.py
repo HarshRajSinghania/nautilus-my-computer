@@ -633,6 +633,10 @@ _CSS = b"""
 .mc-column-list.mc-column-view-highlighted-row > row:selected > .mc-column-row-content {
     background-color: @accent_bg_color;
 }
+.mc-column-list.mc-column-view-highlighted-row > row > .mc-column-row-content.mc-row-path {
+    background-color: @accent_bg_color;
+    color: @accent_fg_color;
+}
 /* Grid/List/Column segmented switcher (see widgets.MyComputerToggleButton).
    Hand-built from Gtk.Box/Gtk.ToggleButton/Gtk.Separator, not Adw.ToggleGroup
    (libadwaita 1.7+ only), so it renders identically on GNOME 47 and 48+.

@@ -11,7 +11,7 @@ gi.require_version("Gio", "2.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk
 
-from nautilus_my_computer import bookmarks, common, components, preferred_folders
+from nautilus_my_computer import bookmarks, column_state, common, components, preferred_folders
 from nautilus_my_computer import uris as uri_utils
 from nautilus_my_computer.common import (
     _COLUMN_MAX_WIDTH,
@@ -619,6 +619,7 @@ class _ColumnViewHost:
         )
         column.connect_selection_changed(lambda: self._schedule_multi_preview(column))
         column.connect_selection_changed(lambda: self._push_selection_to_native(column))
+        column.connect_selection_changed(self._apply_focused_column_style)
         left_click = Gtk.GestureClick(button=Gdk.BUTTON_PRIMARY)
         left_click.connect("released", self._on_column_background_clicked, column)
         column.add_controller(left_click)
@@ -747,19 +748,43 @@ class _ColumnViewHost:
         self._cancel_row_commit()
         self._end_path_at(column)
 
+    def _snapshot_state(self) -> column_state.ColumnState:
+        """The current chain as a ColumnState, for the pure reducers."""
+        return column_state.ColumnState(
+            path=tuple(c.folder_uri for c in self.columns),
+            active=self.focused_index,
+            selection=tuple(self._focused_column().selected_uris()),
+            preview=self.preview_column.file_uri or None,
+        )
+
     def _end_path_at(self, column) -> None:
         """Finder-style: the path ends at column. Deeper columns close and the
         real location follows, as a normal navigation (Back returns to the
-        deeper folder). On the deepest column only the selection clears."""
-        self._clear_selection_keep_chain(column)
-        idx = self.columns.index(column)
-        if idx == len(self.columns) - 1:
-            return
-        self._truncate_chain_to(idx)
-        # Nautilus selects the folder it came from when it goes up; the click
-        # ended the path here, so the column's own selection (none) wins.
-        self._native_bridge.expect(column.folder_uri, column.selected_uris())
-        self._sync_slot_location(column.folder_uri, restore_keyboard_focus=True)
+        deeper folder). The rules live in column_state.click_background."""
+        _state, effects = column_state.click_background(
+            self._snapshot_state(), self.columns.index(column)
+        )
+        self._execute(effects)
+
+    def _execute(self, effects) -> None:
+        """Run the effects a column_state reducer returned, in order."""
+        for effect in effects:
+            match effect:
+                case column_state.Truncate(index=idx):
+                    self._truncate_chain_to(idx)
+                case column_state.ApplySelection(index=idx, uris=uris):
+                    column = self.columns[idx]
+                    self._activate_column(column)
+                    if not uris:
+                        column.clear_selection()
+                case column_state.SetPreview(uri=uri, uris=uris):
+                    self._set_preview(uri, list(uris) or None)
+                case column_state.Navigate(uri=uri, select=select, focus=focus):
+                    self._native_bridge.expect(uri, list(select))
+                    self._sync_slot_location(uri, restore_keyboard_focus=focus)
+                case column_state.Repaint():
+                    self._apply_path_highlights()
+                    self._apply_focused_column_style()
 
     @staticmethod
     def _has_selection_modifier(gesture: Gtk.GestureClick) -> bool:
@@ -1875,8 +1900,12 @@ class _ColumnViewHost:
         keyboard-nav methods below) so the single highlighted row always
         tracks the last-clicked/-focused column, never the whole committed
         path at once."""
+        # An active column with nothing selected hands the accent to the row
+        # that leads into it, so the path never ends on a grey row.
+        active = self.columns[self.focused_index] if self.columns else None
+        lead_in = self.focused_index - 1 if active and not active.selected_uris() else -1
         for i, col in enumerate(self.columns):
-            col.set_current_column(i == self.focused_index)
+            col.set_current_column(i == self.focused_index or i == lead_in)
 
     def _arm_row_commit(self, column: Gtk.Widget, item) -> None:
         """Schedule the Miller commit for a keyboard row change, replacing
