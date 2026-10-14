@@ -2107,6 +2107,18 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         background_drop.connect("drop", self._on_background_drop)
         self.add_controller(background_drop)
 
+        # Outline the column for any drag over it, rows included. A motion
+        # controller in CAPTURE never claims the event, so it sees drags that
+        # a row's own target accepts or rejects alike, and the column being
+        # dragged from.
+        drag_over = Gtk.DropControllerMotion()
+        drag_over.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
+        # A style class, not :drop(active): the column's own Gtk.DropTarget
+        # clears that state flag whenever it rejects a drag.
+        drag_over.connect("enter", lambda *_a: self.add_css_class("mc-drop-over"))
+        drag_over.connect("leave", lambda *_a: self.remove_css_class("mc-drop-over"))
+        self.add_controller(drag_over)
+
         self._load(self._selection_state.begin_reload())
 
     def _show_empty_page(self, empty: bool) -> None:

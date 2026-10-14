@@ -586,6 +586,11 @@ _CSS = b"""
 .mc-column-list > row > .mc-column-row-content.mc-row-cut {
     opacity: 0.50;
 }
+.mc-column.mc-drop-over {
+    outline: 1px solid @accent_bg_color;
+    outline-offset: -1px;
+    border-radius: 4px;
+}
 /* Drop feedback belongs on the whole row, as in Nautilus' list view. */
 .mc-column-list > row:drop(active) {
     --accent-bg-color: var(--diskinfo-selection-grey);
