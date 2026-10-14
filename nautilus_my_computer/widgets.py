@@ -1839,14 +1839,14 @@ class ColumnSelection:
             self._applying = False
 
     def _on_changed(self, model, position: int, n_items: int) -> None:
-        """A selection change GTK made itself (keyboard, list actions): adopt it."""
+        """A selection change GTK made itself (it selects the pressed row on
+        press, before any release decides it was a click): undo it. The model is
+        a display of `_sel`, which only our own input paths change, so a press
+        that turns into a drag or a drift never leaves a second selected row."""
         if self._applying or self._reloading:
             return
-        uris = frozenset(self.uris())
-        anchor = self._sel.anchor if self._sel.anchor in uris else None
-        if n_items == 1 and model.is_selected(position):
-            anchor = self._store.get_item(position).uri
-        self._sel = selection.Selection(uris, anchor)
+        if frozenset(self.uris()) != self._sel.uris:
+            self._apply(self._sel)
 
     def positions(self) -> list[int]:
         bitset = self.model.get_selection()
