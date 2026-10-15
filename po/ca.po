@@ -2,7 +2,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: nautilus-my-computer\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-05 08:14-0700\n"
+"POT-Creation-Date: 2026-10-15 12:50-0700\n"
 "PO-Revision-Date: 2026-08-19 11:51+0000\n"
 "Last-Translator: Unai Lomas\n"
 "Language-Team: Catalan\n"
@@ -425,10 +425,6 @@ msgid "Spreadsheet"
 msgstr "Full de càlcul"
 
 #: nautilus_my_computer/widgets.py
-msgid "Dimensions"
-msgstr "Dimensions"
-
-#: nautilus_my_computer/widgets.py
 #, fuzzy, python-brace-format
 msgid "{n} document"
 msgid_plural "{n} documents"
@@ -446,3 +442,7 @@ msgstr[1] ""
 #, python-brace-format
 msgid "{first} and {second}"
 msgstr ""
+
+#: nautilus_my_computer/widgets.py
+msgid "Dimensions"
+msgstr "Dimensions"
