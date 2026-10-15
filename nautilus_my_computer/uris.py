@@ -42,16 +42,3 @@ def rebase(uri: str, old: str, new: str) -> str:
     rest = normalize(uri)[len(normalize(old)) :].lstrip("/")
     base = normalize(new)
     return f"{base}{rest}" if base.endswith("/") else f"{base}/{rest}"
-
-
-def parent(uri: str) -> str | None:
-    """The containing folder's URI, or None at a scheme root or host root."""
-    n = normalize(uri)
-    marker = n.find("://")
-    if marker < 0:
-        return None
-    prefix, rest = n[: marker + 3], n[marker + 3 :]
-    head, sep, tail = rest.rpartition("/")
-    if not sep or not tail:
-        return None
-    return f"{prefix}{head}" if head else f"{prefix}/"

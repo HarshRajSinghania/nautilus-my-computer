@@ -70,19 +70,3 @@ class Rebase(unittest.TestCase):
 
     def test_from_root(self):
         self.assertEqual(uris.rebase("file:///a", "file:///", "file:///mnt/"), "file:///mnt/a")
-
-
-class Parent(unittest.TestCase):
-    def test_nested(self):
-        self.assertEqual(uris.parent("file:///a/b/"), "file:///a")
-
-    def test_top_level_goes_to_root(self):
-        self.assertEqual(uris.parent("file:///a"), "file:///")
-
-    def test_roots_have_no_parent(self):
-        self.assertIsNone(uris.parent("file:///"))
-        self.assertIsNone(uris.parent("smb://host"))
-        self.assertIsNone(uris.parent("recent:"))
-
-    def test_network_share(self):
-        self.assertEqual(uris.parent("smb://host/share"), "smb://host")
