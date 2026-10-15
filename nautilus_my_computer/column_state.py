@@ -102,6 +102,38 @@ Effect = Truncate | Append | Reroot | SetPreview | ApplySelection | Navigate | F
 Result = tuple[ColumnState, list[Effect]]
 
 
+@dataclass(frozen=True)
+class ColumnPaint:
+    """What one column paints: the row its path runs through, and whether its
+    rows read as accent. At most one column of a plan has `accent` set."""
+
+    path_uri: str | None
+    accent: bool
+
+
+def paint_plan(
+    marks: list[str | None],
+    has_selection: list[bool],
+    focused: int,
+    dnd_hover_index: int | None = None,
+) -> list[ColumnPaint]:
+    """Paint every column at once, so exactly one column is blue (#189).
+
+    `marks[i]` is column i's path mark (state.path_mark), `has_selection[i]`
+    whether it has a selection. The accent column is the focused one when it
+    shows something (a selection or a path mark), else the column leading
+    into it (an empty folder just opened keeps the folder row blue). During a
+    drag hover-open, columns from the hovered one rightwards drop their mark:
+    the dragged selection stays the only blue."""
+    if dnd_hover_index is not None:
+        marks = [None if i >= dnd_hover_index else m for i, m in enumerate(marks)]
+    accent = focused
+    if 0 <= focused < len(marks) and not has_selection[focused] and marks[focused] is None:
+        if focused > 0:
+            accent = focused - 1
+    return [ColumnPaint(m, i == accent) for i, m in enumerate(marks)]
+
+
 def root(uri: str) -> ColumnState:
     return ColumnState(path=(uri,))
 

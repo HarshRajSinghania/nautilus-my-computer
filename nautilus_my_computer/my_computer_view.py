@@ -602,16 +602,15 @@ _CSS = b"""
    normal content-view selection: re-tint just the selected state to the
    native accent tokens, keep everything else (hover, shape) untouched.
 
-   Scoped to .mc-column-view-highlighted-row, not plain :selected: only the
-   column that was last clicked (column_view.py's tracked focused_index,
-   applied via MyComputerColumn.set_current_column) reads as accent -- an
-   ancestor column still further back on the committed path keeps its row
-   selected internally (so navigating still works) but falls back to the
-   plain native :selected grey instead of competing for attention with
-   accent color. This is plain Python-tracked state, not GTK keyboard focus
-   -- no dependency on any focus-grabbing. The class itself is toggled on
-   the column's Gtk.ListView (see set_current_column), not the row -- it
-   names the effect this rule produces, not the widget it's attached to. */
+   Scoped to .mc-column-view-highlighted-row, not plain :selected: exactly
+   one column carries it, picked by ColumnView._repaint (column_state.
+   paint_plan) and applied through MyComputerColumn.paint. In that column the
+   selection is blue, or the path mark (.mc-row-path) when nothing is
+   selected there; a column never shows both, so one or several rows of a
+   single column are blue (#189). Every other column keeps the grey path mark.
+   This is Python-tracked state, not GTK keyboard focus. The class is toggled
+   on the column's Gtk.ListView, not the row: it names the effect this rule
+   produces, not the widget it's attached to. */
 /* The selection fill is painted by our row content, not by Nautilus's row
    node, so adjacent selected rows can drop their shared corners (Finder-style
    blocks, see MyComputerColumn._apply_row_join). 9px is the row radius. */

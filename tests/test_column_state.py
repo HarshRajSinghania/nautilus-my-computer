@@ -183,5 +183,37 @@ class Rename(unittest.TestCase):
         self.assertEqual(cs.renamed(chain(A, B), "file:///q", "file:///r")[1], [])
 
 
+class PaintPlan(unittest.TestCase):
+    """Exactly one column reads as accent (#189 follow-up)."""
+
+    def accents(self, plan):
+        return [i for i, p in enumerate(plan) if p.accent]
+
+    def test_focused_column_with_selection_is_the_only_accent(self):
+        plan = cs.paint_plan([B, C, None], [False, False, True], focused=2)
+        self.assertEqual(self.accents(plan), [2])
+        self.assertEqual([p.path_uri for p in plan], [B, C, None])
+
+    def test_empty_focused_column_hands_accent_to_its_lead_in(self):
+        plan = cs.paint_plan([B, None], [False, False], focused=1)
+        self.assertEqual(self.accents(plan), [0])
+
+    def test_focused_column_with_only_a_mark_keeps_the_accent(self):
+        # Background click keeps the chain: one blue column, not two.
+        plan = cs.paint_plan([B, C, None], [False, False, False], focused=1)
+        self.assertEqual(self.accents(plan), [1])
+
+    def test_empty_first_column_keeps_the_accent(self):
+        self.assertEqual(self.accents(cs.paint_plan([None], [False], focused=0)), [0])
+
+    def test_drag_hover_drops_marks_from_the_hovered_column(self):
+        plan = cs.paint_plan([B, C, None], [True, False, False], focused=0, dnd_hover_index=1)
+        self.assertEqual([p.path_uri for p in plan], [B, None, None])
+        self.assertEqual(self.accents(plan), [0])
+
+    def test_no_columns(self):
+        self.assertEqual(cs.paint_plan([], [], focused=0), [])
+
+
 if __name__ == "__main__":
     unittest.main()

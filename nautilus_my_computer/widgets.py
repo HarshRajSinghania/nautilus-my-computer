@@ -1802,6 +1802,10 @@ class _DisplaySelection(GObject.Object, Gio.ListModel, Gtk.SelectionModel):
                 bits.add(i)
         return bits
 
+    @property
+    def shown(self) -> frozenset[str]:
+        return self._shown
+
     def show(self, uris: frozenset[str]) -> None:
         """Replace the displayed selection and announce it once."""
         if uris == self._shown:
@@ -1965,6 +1969,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         on_row_released=None,
         on_files_dropped=None,
         on_drag_start=None,
+        on_drag_end=None,
     ) -> None:
         super().__init__()
         self._ext = ext
@@ -1972,6 +1977,9 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         # on_drag_start(column) makes this the active column before a drag
         # reads its selection, so a drag never uses another column's.
         self._on_drag_start = on_drag_start
+        # on_drag_end(column) runs when a drag started from one of its rows
+        # ends, dropped or cancelled.
+        self._on_drag_end = on_drag_end
         # on_files_dropped(uris, destination_uri, move) runs after a drop on a
         # folder row or this column's background has been filtered.
         self._on_files_dropped = on_files_dropped
@@ -2045,12 +2053,14 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         # only ever deal with one file keep working unchanged.
         self._selection_state = ColumnSelection(self._store)
         self._selection = self._selection_state.model
-        self._is_current = False
+        # Set only by ColumnView._repaint through paint(): whether this
+        # column's rows read as accent. At most one column has it (#189).
+        self._accent = False
         # URI of the row that leads to the next column or preview. Shown as a
         # path highlight, never written into the selection (#178).
         self.path_uri: str | None = None
         self._selection_callbacks: list = []
-        self._selection.connect("selection-changed", lambda *_args: self._refresh_row_joins())
+        self._selection.connect("selection-changed", lambda *_args: self._refresh_rows())
         self._row_widgets: dict[int, MyComputerColumnRow] = {}
 
         factory = Gtk.SignalListItemFactory()
@@ -2154,6 +2164,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         drag.set_propagation_phase(Gtk.PropagationPhase.CAPTURE)
         drag.connect("prepare", self._on_row_drag_prepare, row)
         drag.connect("drag-begin", self._on_row_drag_begin, row)
+        drag.connect("drag-end", self._on_row_drag_end)
         row.add_controller(drag)
 
         row_drop = self._new_drop_target()
@@ -2287,6 +2298,10 @@ class MyComputerColumn(Gtk.ScrolledWindow):
     def _on_row_drag_begin(self, source, _drag, row: "MyComputerColumnRow") -> None:
         source.set_icon(Gtk.WidgetPaintable.new(row._icon_stack), 0, 0)
 
+    def _on_row_drag_end(self, _source, _drag, _delete_data) -> None:
+        if self._on_drag_end is not None:
+            self._on_drag_end(self)
+
     def _on_row_widget_pressed(
         self,
         gesture: Gtk.GestureClick,
@@ -2318,14 +2333,35 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         self._apply_row_join(row)
 
     def _is_path_item(self, item) -> bool:
-        return self.path_uri is not None and uri_utils.same_uri(item.uri, self.path_uri)
+        """The path mark shows only while the column has no selection: a
+        selection always wins, so a drag, a Ctrl/Shift click or an arrow key
+        moving the selection can never leave the old path row blue next to it
+        (#189). Read at bind time and on every selection change."""
+        return (
+            self.path_uri is not None
+            and not self._selection.shown
+            and uri_utils.same_uri(item.uri, self.path_uri)
+        )
 
-    def set_path_uri(self, uri: str | None) -> None:
-        """Set which row the Miller path runs through. The comparison is made
-        at bind time too, so a recycled row widget never keeps a stale mark."""
-        if uri == self.path_uri:
-            return
-        self.path_uri = uri
+    def paint(self, path_uri: str | None, accent: bool) -> None:
+        """The column's only paint input, given by ColumnView._repaint: the
+        row the Miller path runs through, and whether this column is the one
+        blue column. Rows re-derive their marks from it at bind time too, so a
+        recycled row widget never keeps a stale mark."""
+        if accent != self._accent:
+            self._accent = accent
+            # Toggled on the ListView, not the row: the selected row's widget
+            # can be recycled away, the ListView stays (see the
+            # .mc-column-view-highlighted-row rules in my_computer_view.py).
+            if accent:
+                self.list_view.add_css_class("mc-column-view-highlighted-row")
+            else:
+                self.list_view.remove_css_class("mc-column-view-highlighted-row")
+        if path_uri != self.path_uri:
+            self.path_uri = path_uri
+            self._refresh_path_marks()
+
+    def _refresh_path_marks(self) -> None:
         for row in self._row_widgets.values():
             if row.item is not None:
                 row.set_path(self._is_path_item(row.item))
@@ -2693,6 +2729,11 @@ class MyComputerColumn(Gtk.ScrolledWindow):
     def has_selection(self) -> bool:
         return self.selection_count() > 0
 
+    def shows_selection(self) -> bool:
+        """Whether a selection is on screen, without walking the rows (read on
+        every repaint, see ColumnView._repaint)."""
+        return bool(self._selection.shown)
+
     def selected_index(self) -> int | None:
         """The anchor row's position (the only one when one row is selected)."""
         return self._selection_state.primary()
@@ -2757,24 +2798,10 @@ class MyComputerColumn(Gtk.ScrolledWindow):
                 return max(1, visible_rows - 1)
         return None
 
-    def set_current_column(self, is_current: bool) -> None:
-        """Mark whether this column is the one whose selected row should read
-        as *the* accent-highlighted selection (see the
-        .mc-column-view-highlighted-row CSS rule in my_computer_view.py).
-        Driven by column_view.py's own tracked focused_index -- i.e.
-        whichever column was last clicked or last moved into with Left/
-        Right -- rather than by actual GTK keyboard focus, so it works
-        independent of any real focus-grabbing. The class is
-        toggled on this column's own Gtk.ListView (there's no cheaper way to
-        scope the CSS to "whichever row is selected in this column," since
-        the selected row's widget can be recycled away under Gtk.ListView),
-        but it names the row-level effect it produces, not the column it's
-        attached to."""
-        self._is_current = is_current
-        self._refresh_accent()
-
-    def _refresh_row_joins(self) -> None:
+    def _refresh_rows(self) -> None:
         for row in self._row_widgets.values():
+            if row.item is not None:
+                row.set_path(self._is_path_item(row.item))
             self._apply_row_join(row)
 
     def _apply_row_join(self, row: "MyComputerColumnRow") -> None:
@@ -2798,15 +2825,6 @@ class MyComputerColumn(Gtk.ScrolledWindow):
                 row.add_css_class(name)
             else:
                 row.remove_css_class(name)
-
-    def _refresh_accent(self) -> None:
-        """Accent marks the selection in the current column, single or
-        multiple rows, like Finder. Earlier columns on the path keep the
-        native grey :selected."""
-        if self._is_current:
-            self.list_view.add_css_class("mc-column-view-highlighted-row")
-        else:
-            self.list_view.remove_css_class("mc-column-view-highlighted-row")
 
     def apply_cut_uris(self, cut_uris: set[str]) -> None:
         """Apply cut styling to every item whose uri is in cut_uris, and clear
