@@ -102,7 +102,7 @@ class NativeBridge:
         self._ids = []
         self._model = None
 
-    def _shows(self, folder_uri: str) -> bool:
+    def shows(self, folder_uri: str) -> bool:
         loc = self._slot.get_property("location")
         return loc is not None and loc.equal(Gio.File.new_for_uri(folder_uri))
 
@@ -144,7 +144,7 @@ class NativeBridge:
         """Column selection changed in the column showing `folder_uri`. Written
         only when the native model shows that same folder; an ancestor column
         leaves it alone (see carry)."""
-        if not self._shows(folder_uri):
+        if not self.shows(folder_uri):
             return
         _log(f"native_selection: push {len(uris)} for {folder_uri!r}")
         self._set_pending(folder_uri, uris)
@@ -153,7 +153,7 @@ class NativeBridge:
         """Leaving Column View with an ancestor column selected: navigate the
         slot to that column's folder, then apply once it has loaded."""
         self._set_pending(folder_uri, uris)
-        if not self._shows(folder_uri):
+        if not self.shows(folder_uri):
             _log(f"native_selection: carry {len(uris)} via open-location {folder_uri!r}")
             self._slot.activate_action("slot.open-location", GLib.Variant("s", folder_uri))
 
@@ -169,7 +169,7 @@ class NativeBridge:
 
     def _try_apply(self, *, final: bool) -> None:
         folder = self._pending.folder
-        if folder is None or not self._shows(folder):
+        if folder is None or not self.shows(folder):
             return
         if self._loading() and not final:
             return
@@ -206,7 +206,7 @@ class NativeBridge:
 
     def _on_location_changed(self, _slot, _pspec) -> None:
         folder = self._pending.folder
-        if folder is not None and not self._shows(folder):
+        if folder is not None and not self.shows(folder):
             self._pending.drop()
 
 

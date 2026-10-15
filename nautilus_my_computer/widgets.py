@@ -2005,7 +2005,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         # child until it knows there is a row that can actually own selection.
         self._loaded = False
         # Manual repeat-click detection for opening the already-previewed file row
-        # (see _on_row_activated_internal): a raw GestureClick on the row can't be
+        # (see activate_row): a raw GestureClick on the row can't be
         # used for this because every activation rebuilds the paned chain
         # (column_view.py's _rebuild_chain), which resets GTK's own press-count
         # tracking on the row before a second click can land.
@@ -2389,7 +2389,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
             return
         row = self._row_widgets.get(id(item))
         if row is not None:
-            self._on_row_activated_internal(row)
+            self.activate_row(row)
 
     def set_sort(self, sort: tuple[str, bool, bool]) -> None:
         """Update this column's sort and reload. Always reloads regardless of
@@ -2710,9 +2710,9 @@ class MyComputerColumn(Gtk.ScrolledWindow):
 
         Drives every keyboard-originated selection change (see
         column_view.py's _focus_child_column and _move_column_selection).
-        Returning the item is the whole contract: nothing here notifies
-        anyone that the selection moved, so the caller arms the Miller
-        commit explicitly off what it gets back."""
+        The selection-changed listeners fire as for any other change; the
+        Miller commit is not one of them, so the caller arms it explicitly
+        off the returned item."""
         n = self._store.get_n_items()
         if n == 0:
             return None
@@ -2916,7 +2916,7 @@ class MyComputerColumn(Gtk.ScrolledWindow):
     def grab_list_focus(self) -> bool:
         return self.list_view.grab_focus()
 
-    def _on_row_activated_internal(self, row: "MyComputerColumnRow") -> None:
+    def activate_row(self, row: "MyComputerColumnRow") -> None:
         # Miller browsing itself is always single-click, for every policy: one
         # click drills into a folder or previews a file, exactly like the
         # folder-column drill-down (set_activate_on_single_click above). Once a

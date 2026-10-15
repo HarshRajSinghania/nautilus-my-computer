@@ -436,6 +436,9 @@ class _ColumnViewHost:
         self._operation_monitors: list[Gio.FileMonitor] = []
         self._native_cut_observer = NativeCutStateObserver(win, self._apply_native_cut_uris)
         self._sort = get_column_view_sort(ext)
+        # Outermost paned of the chain, built by _rebuild_chain.
+        self.root: Gtk.Widget | None = None
+        self._multi_preview_idle = 0
 
         self.columns = self._build_columns()
         self.preview_column = self._make_preview_column()
@@ -669,7 +672,7 @@ class _ColumnViewHost:
         if not self.columns:
             return
         deepest = self.columns[-1]
-        if not self._native_bridge._shows(deepest.folder_uri):
+        if not self._native_bridge.shows(deepest.folder_uri):
             return
         if not uris and self.focused_index != len(self.columns) - 1:
             # Echo of our own drill-down: the new deepest column is empty, so
@@ -687,7 +690,7 @@ class _ColumnViewHost:
         """Selection changes arrive in bursts (a plain click clears then
         selects, Shift ranges fire several times), so the preview is reconciled
         once on idle, after the click handler has finished."""
-        if getattr(self, "_multi_preview_idle", 0):
+        if self._multi_preview_idle:
             return
         self._multi_preview_idle = GLib.idle_add(self._reconcile_multi_preview, column)
 
@@ -1076,7 +1079,7 @@ class _ColumnViewHost:
         can still scroll); claiming here instead cancels Gtk.ListBox's own
         gesture before its released handler runs, so activation happens once,
         through us. Drives the same real behaviour click used to:
-        MyComputerColumn's own _on_row_activated_internal --
+        MyComputerColumn's own activate_row --
         same-file-reopens-to-open, double-click-window, and drill-into-folder
         dispatch -- after the click's own selection below, and
         _repaint downstream marks the open path.
@@ -1090,7 +1093,7 @@ class _ColumnViewHost:
           the row itself, so the equivalent test is a bounds check on the
           row's own allocation.
         - **Every press count dispatches, not just the first.**
-          `_on_row_activated_internal` detects repeat clicks by *timing*, not
+          `activate_row` detects repeat clicks by *timing*, not
           `n_press`, precisely because a chain rebuild resets GTK's press-count
           tracking mid-double-click (see MyComputerColumn's own
           `_last_activated_uri` comment). A second release can therefore arrive
@@ -1130,7 +1133,7 @@ class _ColumnViewHost:
             self._activate_column(column)
             # A plain click ends any Ctrl/Shift multi-selection: only this row stays.
             column.select_only_item(row.item)
-            column._on_row_activated_internal(row)
+            column.activate_row(row)
         finally:
             self._nav_from_index = None
 
@@ -1768,7 +1771,7 @@ class _ColumnViewHost:
             _log(f"_sync_slot_location failed for {uri!r}: {e}")
 
     def _detach_root(self) -> None:
-        old_root = getattr(self, "root", None)
+        old_root = self.root
         if old_root is not None:
             self._detach_paned_children(old_root)
             self.aligner.set_content(None)
@@ -2049,7 +2052,7 @@ class _ColumnViewHost:
         them rather than pass them anywhere useful) -- they move focus
         between columns. Return opens the selection explicitly rather than
         relying on Gtk.ListView's "activate", which only reaches
-        _on_row_activated_internal's mouse click-policy/repeat-click timing,
+        activate_row's mouse click-policy/repeat-click timing,
         not a plain "open now".
         """
         if keyval == Gdk.KEY_Escape:
@@ -2201,7 +2204,7 @@ class _ColumnViewHost:
         that's what "open" means in a Miller view. Files go straight to
         their default application, unconditionally: unlike a click, Return
         is never a mid-flight preview, so neither click-policy nor the
-        repeat-click timing _on_row_activated_internal applies."""
+        repeat-click timing activate_row applies."""
         self._cancel_row_commit()
         item = column.selected_item()
         if item is None:
@@ -2310,7 +2313,7 @@ class _ColumnViewHost:
         self.preview_column = MyComputerPreviewColumn(self._ext, file_uri, uris)
 
     def _rebuild_chain(self) -> None:
-        old_root = getattr(self, "root", None)
+        old_root = self.root
         if old_root is not None:
             self._detach_paned_children(old_root)
 
@@ -2323,7 +2326,7 @@ class _ColumnViewHost:
 
     def _rightmost_paned(self) -> Gtk.Paned | None:
         """The paned whose end child is the trailing preview column."""
-        paned = getattr(self, "root", None)
+        paned = self.root
         while isinstance(paned, Gtk.Paned):
             child = paned.get_end_child()
             if not isinstance(child, Gtk.Paned):
@@ -2360,7 +2363,7 @@ class _ColumnViewHost:
         already holds the final list.
         """
         keep = len(self.columns) - (1 if new_column is not None else 0)
-        paned = getattr(self, "root", None)
+        paned = self.root
         for _depth in range(keep - 1):
             if not isinstance(paned, Gtk.Paned):
                 break
