@@ -549,47 +549,95 @@ _CSS = b"""
 .mc-preview-image {
     border-radius: 12px;
 }
+/* Multi-selection stack preview: larger soft shadow than the stock
+   icon-dropshadow, and rounded corners on decoded images. The picture is
+   sized to the texture, so the radius and shadow follow the image edges.
+   Only applied to opaque images. */
+.mc-stack-image {
+    border-radius: 12px;
+    box-shadow: 0 6px 20px alpha(black, 0.25);
+}
+.mc-stack-icon {
+    -gtk-icon-shadow: 0 6px 20px alpha(black, 0.25);
+}
 /* Column View row thumbnail: rounded corners. The Gtk.Picture sets
    overflow:hidden so this radius clips the COVER-cropped square texture. */
 .mc-row-thumbnail {
     border-radius: 3px;
 }
-/* GtkListView's per-item "row" node (GtkListItemWidget) normally applies the
-   sidebar's horizontal padding around its child, same as GtkListBoxRow did
-   pre-#139-refactor. Move that inset into the Miller child box
-   (.mc-column-row-content, see widgets.MyComputerColumnRow) so it fills the
-   outer row allocation exactly, while its contents retain the native 8px
-   inset. */
+/* Column rows follow Nautilus' list view (style.css: row radius 9px), not the
+   places sidebar, so the list does not carry .navigation-sidebar. GtkListView's
+   per-item "row" node (GtkListItemWidget) only supplies the radius and the
+   hover/selected layers; the inset and height live in .mc-column-row-content
+   (see widgets.MyComputerColumnRow) so it fills the row allocation exactly.
+   Rows touch (no gap between them), like the native list view, so a
+   multi-selection reads as one continuous band. 6px list padding and 6px
+   content padding keep a 24px icon slot on a 36px row. */
+.mc-column-list {
+    padding: 6px;
+}
 .mc-column-list > row {
-    padding-left: 0;
-    padding-right: 0;
+    padding: 0;
+    border-radius: 9px;
 }
 .mc-column-list > row > .mc-column-row-content {
-    padding-left: 8px;
-    padding-right: 8px;
+    padding: 6px 8px;
 }
 .mc-column-list > row > .mc-column-row-content.mc-row-cut {
     opacity: 0.50;
 }
-/* Miller columns reuse .navigation-sidebar for its rounded-corner selection
-   shape (see widgets.py's MyComputerColumn), but a sidebar's native
-   :selected fill is a neutral grey, not accent -- correct for a places
-   sidebar, wrong for a browsing view where the last-selected row (folder or
-   file) should read like a normal content-view selection. Re-tint just the
-   selected state to the native accent tokens, keep everything else
-   (hover, shape, spacing) untouched.
+.mc-column.mc-drop-over {
+    outline: 1px solid @accent_bg_color;
+    outline-offset: -1px;
+    border-radius: 4px;
+}
+/* Drop feedback belongs on the whole row, as in Nautilus' list view. */
+.mc-column-list > row:drop(active) {
+    --accent-bg-color: var(--diskinfo-selection-grey);
+}
+.mc-column-list > row > .mc-column-row-content:drop(active) {
+    box-shadow: none;
+}
+/* The last-selected row (folder or file) of the active column reads like a
+   normal content-view selection: re-tint just the selected state to the
+   native accent tokens, keep everything else (hover, shape) untouched.
 
-   Scoped to .mc-column-view-highlighted-row, not plain :selected: only the
-   column that was last clicked (column_view.py's tracked focused_index,
-   applied via MyComputerColumn.set_current_column) reads as accent -- an
-   ancestor column still further back on the committed path keeps its row
-   selected internally (so navigating still works) but falls back to the
-   plain native :selected grey instead of competing for attention with
-   accent color. This is plain Python-tracked state, not GTK keyboard focus
-   -- no dependency on any focus-grabbing. The class itself is toggled on
-   the column's Gtk.ListView (see set_current_column), not the row -- it
-   names the effect this rule produces, not the widget it's attached to. */
-.mc-column-list.navigation-sidebar.mc-column-view-highlighted-row row:selected {
+   Scoped to .mc-column-view-highlighted-row, not plain :selected: exactly
+   one column carries it, picked by ColumnView._repaint (column_state.
+   paint_plan) and applied through MyComputerColumn.paint. In that column the
+   selection is blue, or the path mark (.mc-row-path) when nothing is
+   selected there; a column never shows both, so one or several rows of a
+   single column are blue (#189). Every other column keeps the grey path mark.
+   This is Python-tracked state, not GTK keyboard focus. The class is toggled
+   on the column's Gtk.ListView, not the row: it names the effect this rule
+   produces, not the widget it's attached to. */
+/* The selection fill is painted by our row content, not by Nautilus's row
+   node, so adjacent selected rows can drop their shared corners (Finder-style
+   blocks, see MyComputerColumn._apply_row_join). 9px is the row radius. */
+.mc-column-list > row:selected,
+.mc-column-list > row:selected:hover {
+    background-color: transparent;
+}
+.mc-column-list > row:selected > .mc-column-row-content,
+.mc-column-list > row > .mc-column-row-content.mc-row-path {
+    background-color: alpha(currentColor, 0.1);
+    border-radius: 9px;
+}
+.mc-column-list > row:selected > .mc-column-row-content.mc-join-above {
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+}
+.mc-column-list > row:selected > .mc-column-row-content.mc-join-below {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+.mc-column-list.mc-column-view-highlighted-row > row:selected {
+    color: @accent_fg_color;
+}
+.mc-column-list.mc-column-view-highlighted-row > row:selected > .mc-column-row-content {
+    background-color: @accent_bg_color;
+}
+.mc-column-list.mc-column-view-highlighted-row > row > .mc-column-row-content.mc-row-path {
     background-color: @accent_bg_color;
     color: @accent_fg_color;
 }

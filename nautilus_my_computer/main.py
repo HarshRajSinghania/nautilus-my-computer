@@ -95,7 +95,7 @@ DETACH_SETTINGS_WINDOW = False  # testing toggle: True opens settings as a stand
 
 # ── Extension metadata (keep in sync with pyproject.toml) ────────────────────
 EXT_NAME = "My Computer for Nautilus"
-EXT_VERSION = "0.13.2"
+EXT_VERSION = "0.13.3"
 EXT_AUTHOR = "Yann Masoch"
 EXT_LICENSE = "MIT"
 EXT_GITHUB = "https://github.com/yannmasoch/nautilus-my-computer"
@@ -562,6 +562,7 @@ _WINDOW_SHORTCUTS: dict[tuple[int, int], str] = {
     (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_x): "_cut_column_focused_folder",
     (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_c): "_copy_column_focused_folder",
     (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_v): "_paste_into_column_focused_folder",
+    (int(Gdk.ModifierType.CONTROL_MASK), Gdk.KEY_a): "_select_all_in_column_focused_folder",
     (
         int(Gdk.ModifierType.CONTROL_MASK | Gdk.ModifierType.SHIFT_MASK),
         Gdk.KEY_N,
@@ -1203,6 +1204,14 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
             return False
         return column_view.paste_into_focused_folder(self, win)
 
+    def _select_all_in_column_focused_folder(self, win: Gtk.Window) -> bool:
+        """Ctrl+A: select every row of the focused Miller column."""
+        if not self._active_slot_showing_column(win):
+            return False
+        if isinstance(win.get_focus(), Gtk.Editable):
+            return False
+        return column_view.select_all_in_focused_column(self, win)
+
     def _new_folder_in_column_focused_folder(self, win: Gtk.Window) -> bool:
         """Shift+Ctrl+N: create a folder in the focused Miller column."""
         if not self._active_slot_showing_column(win):
@@ -1278,6 +1287,7 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         if slot is not None and column_view.slot_is_showing_column(slot):
             _log("_leave_column_view_for_native_mode: dropping back to native view")
             column_view.leave_column_view(slot)
+            column_view.carry_selection_to_native(slot)
             if getattr(slot, "_mc_column_native_stopped", False):
                 GLib.idle_add(self._reload_native_slot_after_column, win, slot)
         return False
@@ -2186,16 +2196,30 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
             )
         search_root = places_sidebar or nautilus_sidebar
 
+        # Our own injected Computer listbox also carries .navigation-sidebar, so
+        # it must never be returned here -- picking it up would make a second
+        # injection pass treat it as the native list.
+        def _is_ours(w) -> bool:
+            return w.get_name() == "sidebar_my_computer_listbox"
+
         for w in _all_widgets(search_root):
-            if isinstance(w, Gtk.ListBox) and w.has_css_class("navigation-sidebar"):
+            if (
+                isinstance(w, Gtk.ListBox)
+                and w.has_css_class("navigation-sidebar")
+                and not _is_ours(w)
+            ):
                 return w
 
         for w in _all_widgets(search_root):
-            if isinstance(w, Gtk.ListBox) and w.has_css_class("places-sidebar-list"):
+            if (
+                isinstance(w, Gtk.ListBox)
+                and w.has_css_class("places-sidebar-list")
+                and not _is_ours(w)
+            ):
                 return w
 
         for w in _all_widgets(search_root):
-            if isinstance(w, Gtk.ListBox):
+            if isinstance(w, Gtk.ListBox) and not _is_ours(w):
                 _log("_find_sidebar_listbox: no known sidebar class found, using first GtkListBox")
                 return w
         return None
@@ -2613,7 +2637,15 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
             return False
 
         # Guard: skip if we already wrapped this sidebar (double-injection).
+        # The wrapper is a GtkBox, which is not a GtkScrollable, so
+        # gtk_scrolled_window_set_child() auto-creates a GtkViewport around it.
+        # get_child() therefore returns that viewport, not the wrapper, so the
+        # name has to be checked through it -- otherwise the guard never fires,
+        # every pass re-wraps, and set_child() destroys the previous wrapper
+        # together with Nautilus' native listbox inside it (empty sidebar).
         existing = native_scrolled_window.get_child()
+        if isinstance(existing, Gtk.Viewport):
+            existing = existing.get_child()
         if existing is not None and existing.get_name() == "sidebar_my_computer_wrapper":
             _log("_inject_sidebar_link: wrapper already present, skipping")
             return True

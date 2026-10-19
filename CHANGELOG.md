@@ -4,6 +4,37 @@ All notable changes to this project are documented here.
 
 ---
 
+## v0.13.3
+Column View gains drag and drop, multi-selection, and a Finder-style multi-file preview, and
+the sidebar no longer goes empty after repeated navigation.
+
+### Added
+- Column View: drag and drop. Drag rows onto folder rows or a column background (hold Ctrl to
+  copy), and hover over a folder while dragging to open it.
+- Column View: multi-selection with Shift for ranges, Ctrl to toggle, and Ctrl+A. Selection
+  follows Nautilus's own rules and carries over when switching between Column View and
+  List/Grid.
+- Column View: Finder-style preview when several files are selected.
+
+### Changed
+- Column View: clicking a column's empty space or a file row now ends the path at that column,
+  like in Finder.
+- Column View: drop feedback now matches Nautilus rows, with the blue highlight kept to a single
+  column and no stray blue rows after a press or drag.
+- Updated translations.
+
+### Fixed
+- The sidebar no longer disappears after Nautilus has been navigating for a while or has
+  several windows open.
+
+Thanks to @Digitt6 for requesting drag and drop in Column View in #154; to @hericlesbitencourt
+for the original drag and drop and multi-selection work in #154 (ported from #146); to
+@pierre-rs for asking about multi-selection in Column View in #178; and to @SkeJm for
+reporting the disappearing sidebar in #181 and @R0h1tAnand for finding its root cause and
+fixing it in #181.
+
+---
+
 ## v0.13.2
 Own the View Options popover end to end, add Column View keyboard navigation, fix a KDE
 click-count bug and a large-folder CPU spike in Column View, and match native hover, pressed,

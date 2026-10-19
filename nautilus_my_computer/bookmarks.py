@@ -17,6 +17,7 @@ gi.require_version("GLib", "2.0")
 gi.require_version("Gtk", "4.0")
 from gi.repository import Gdk, Gio, GLib, Gtk
 
+from nautilus_my_computer import uris as uri_utils
 from nautilus_my_computer.common import (
     _,
     _all_widgets,
@@ -48,14 +49,14 @@ def bookmark_uris() -> set:
             for line in f:
                 line = line.strip()
                 if line:
-                    uris.add(line.split(maxsplit=1)[0].rstrip("/"))
+                    uris.add(uri_utils.normalize(line.split(maxsplit=1)[0]))
     except OSError:
         pass
     return uris
 
 
 def is_bookmarked(uri: str) -> bool:
-    return uri.rstrip("/") in bookmark_uris()
+    return uri_utils.normalize(uri) in bookmark_uris()
 
 
 def add_bookmark(uri: str, label: str | None = None) -> None:
@@ -64,7 +65,7 @@ def add_bookmark(uri: str, label: str | None = None) -> None:
     Nautilus monitors this file and refreshes the sidebar live, so no extra
     signaling is needed after the write.
     """
-    norm = uri.rstrip("/")
+    norm = uri_utils.normalize(uri)
     if norm in bookmark_uris():
         return
     path = _bookmarks_path()
@@ -76,7 +77,7 @@ def add_bookmark(uri: str, label: str | None = None) -> None:
 
 def remove_bookmark(uri: str) -> None:
     """Rewrite the GTK bookmarks file, dropping the line matching uri."""
-    norm = uri.rstrip("/")
+    norm = uri_utils.normalize(uri)
     path = _bookmarks_path()
     try:
         with open(path) as f:
@@ -111,7 +112,7 @@ def set_bookmark_icon(gsettings, uri: str, icon_name: str) -> None:
     if not gsettings:
         return
     icons = get_bookmark_icons(gsettings)
-    icons[uri.rstrip("/")] = icon_name
+    icons[uri_utils.normalize(uri)] = icon_name
     gsettings.set_value("custom-bookmark-icons", GLib.Variant("a{ss}", icons))
 
 
@@ -119,7 +120,7 @@ def clear_bookmark_icon(gsettings, uri: str) -> None:
     if not gsettings:
         return
     icons = get_bookmark_icons(gsettings)
-    if icons.pop(uri.rstrip("/"), None) is not None:
+    if icons.pop(uri_utils.normalize(uri), None) is not None:
         gsettings.set_value("custom-bookmark-icons", GLib.Variant("a{ss}", icons))
 
 
@@ -192,7 +193,7 @@ def apply_bookmark_icons(ext, native_listbox) -> None:
             uri = None
         if not uri:
             continue
-        icon_name = icons.get(uri.rstrip("/"))
+        icon_name = icons.get(uri_utils.normalize(uri))
         if icon_name:
             apply_icon_to_row(row, icon_name)
 
@@ -224,7 +225,7 @@ def attach_bookmark_context_menus(ext, win, native_listbox) -> None:
             uri = row.get_property("uri")
         except Exception:
             uri = None
-        if not uri or uri.rstrip("/") not in uris:
+        if not uri or uri_utils.normalize(uri) not in uris:
             continue
         try:
             label = row.get_property("label") or uri
@@ -296,7 +297,7 @@ def open_bookmark_icon_picker(ext, uri: str, label: str, row) -> None:
     (not GtkPopoverMenu) so icons can be clicked repeatedly without the
     popover auto-closing."""
     _log(f"open_bookmark_icon_picker: uri={uri} label={label}")
-    current_icon = get_bookmark_icons(ext._gsettings).get(uri.rstrip("/"))
+    current_icon = get_bookmark_icons(ext._gsettings).get(uri_utils.normalize(uri))
 
     # Only the visible-row count needs a pixel height; the width is dynamic.
     # A ScrolledWindow with horizontal policy NEVER requests its child's full

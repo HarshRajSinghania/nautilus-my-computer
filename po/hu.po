@@ -5,7 +5,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: nautilus-my-computer\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-25 15:20-0700\n"
+"POT-Creation-Date: 2026-10-15 12:50-0700\n"
 "PO-Revision-Date: 2026-08-04 18:39+0000\n"
 "Last-Translator: Pelach András <pelach.andras@gmail.com>\n"
 "Language-Team: Hungarian\n"
@@ -427,6 +427,25 @@ msgstr ""
 
 #: nautilus_my_computer/widgets.py
 msgid "Spreadsheet"
+msgstr ""
+
+#: nautilus_my_computer/widgets.py
+#, fuzzy, python-brace-format
+msgid "{n} document"
+msgid_plural "{n} documents"
+msgstr[0] "Új dokumentum"
+msgstr[1] "Új dokumentum"
+
+#: nautilus_my_computer/widgets.py
+#, python-brace-format
+msgid "{n} folder"
+msgid_plural "{n} folders"
+msgstr[0] ""
+msgstr[1] ""
+
+#: nautilus_my_computer/widgets.py
+#, python-brace-format
+msgid "{first} and {second}"
 msgstr ""
 
 #: nautilus_my_computer/widgets.py

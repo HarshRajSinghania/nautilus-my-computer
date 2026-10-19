@@ -847,6 +847,9 @@ _COLUMN_ROW_ICON_SIZE = (
 )
 _COLUMN_ROW_SPACING = 8  # column view: gap (px) between a row's icon/label/chevron
 _COLUMN_PREVIEW_WIDTH = 400  # column view: default preview column width (px)
+_PREVIEW_ICON_SIZE = (
+    340  # preview column: file icon, and each item of the multi-selection stack (px)
+)
 _COLUMN_PREVIEW_IMAGE_SIZE = 1024  # preview lookup size (px); big enough for scalable variant
 _COLUMN_PREVIEW_IMAGE_MAX_WIDTH = 1024  # max preview image width (px); larger images scaled to fit
 

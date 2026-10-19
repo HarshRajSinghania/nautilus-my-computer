@@ -63,6 +63,9 @@ class NautilusPrefs:
     def hidden_files(self) -> bool:
         return self._filechooser.get_boolean("show-hidden")
 
+    def open_folder_on_dnd_hover(self) -> bool:
+        return self._prefs.get_boolean("open-folder-on-dnd-hover")
+
     def sort_directories_first(self) -> bool:
         """Nautilus Preferences > "Sort Folders Before Files". Lives in the
         same shared GTK4 file-chooser schema as show-hidden
@@ -146,7 +149,7 @@ class NautilusPrefs:
         activate-on-single-click flag (widgets.py's
         flow.set_activate_on_single_click) and Column View's Miller file rows
         and preview column, both of which read click_policy live at click
-        time (widgets.py's MyComputerColumn._on_row_activated_internal and
+        time (widgets.py's MyComputerColumn.activate_row and
         MyComputerPreviewColumn._on_preview_area_pressed/_released) -- folder
         rows stay single-click regardless (drill-down UX, see
         MyComputerColumn). Bundling this with view-mode's full

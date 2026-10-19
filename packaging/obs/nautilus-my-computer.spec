@@ -1,5 +1,5 @@
 Name:           nautilus-my-computer
-Version:        0.13.2
+Version:        0.13.3
 Release:        0
 Summary:        My Computer for Nautilus, what GNOME Files should have always been
 
@@ -42,6 +42,14 @@ make build
 %{_datadir}/glib-2.0/schemas/io.github.yannmasoch.nautilus-my-computer.gschema.xml
 
 %changelog
+* Mon Oct 19 2026 Yann Masoch <231734284+yannmasoch@users.noreply.github.com> - 0.13.3-0
+- Add Column View drag and drop (Ctrl to copy, hover a folder to open it)
+- Add Column View multi-selection (Shift ranges, Ctrl toggle, Ctrl+A) that carries over to List/Grid
+- Add Finder-style preview for multi-file selections in Column View
+- Clicking empty space or a file in Column View now ends the path at that column
+- Match Nautilus drop feedback in Column View, with a single-column blue highlight
+- Fix the sidebar disappearing after repeated navigation or multiple windows
+- Update translations
 * Tue Aug 25 2026 Yann Masoch <231734284+yannmasoch@users.noreply.github.com> - 0.13.2-0
 - Own the View Options popover, fixing Grid/List/Column/Computer sort menu inconsistencies
 - Preferred Folders captions now follow Nautilus's native "Captions" setting
