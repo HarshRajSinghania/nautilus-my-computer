@@ -1,3 +1,15 @@
+nautilus-my-computer (0.13.3-1) UNRELEASED; urgency=medium
+
+  * Add Column View drag and drop (Ctrl to copy, hover a folder to open it)
+  * Add Column View multi-selection (Shift ranges, Ctrl toggle, Ctrl+A) that carries over to List/Grid
+  * Add Finder-style preview for multi-file selections in Column View
+  * Clicking empty space or a file in Column View now ends the path at that column
+  * Match Nautilus drop feedback in Column View, with a single-column blue highlight
+  * Fix the sidebar disappearing after repeated navigation or multiple windows
+  * Update translations
+
+ -- Yann Masoch <231734284+yannmasoch@users.noreply.github.com>  Mon, 19 Oct 2026 13:58:56 -0700
+
 nautilus-my-computer (0.13.2-1) UNRELEASED; urgency=medium
 
   * Own the View Options popover, fixing Grid/List/Column/Computer sort menu inconsistencies
