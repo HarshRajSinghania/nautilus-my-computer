@@ -47,6 +47,7 @@ from nautilus_my_computer.common import (
     _pin_icon,
     _resolve_gtype,
     _slot_action,
+    resolve_open_uri,
     slot_view_owner,
 )
 from nautilus_my_computer.context_menu import (
@@ -1628,11 +1629,18 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         dialog.present(win)
         search_entry.grab_focus()
 
+    # The three deliberate-open primitives below resolve their URI first, so a
+    # folder the user can't read opens through admin:// like a native
+    # activation does (issue #187). _navigate_to stays unresolved for
+    # sidebar and sync navigation.
     def _do_open(self, nav_uri: str, win: Gtk.Window) -> None:
-        GLib.idle_add(self._navigate_to, nav_uri, win)
+        resolve_open_uri(nav_uri, lambda uri: self._navigate_to(uri, win))
 
     def _do_open_tab(self, nav_uri: str, win: Gtk.Window, make_active: bool = True) -> None:
-        """Open nav_uri in a new tab, built the way Nautilus itself builds one
+        resolve_open_uri(nav_uri, lambda uri: self._open_tab_resolved(uri, win, make_active))
+
+    def _open_tab_resolved(self, uri: str, win: Gtk.Window, make_active: bool) -> None:
+        """Open uri in a new tab, built the way Nautilus itself builds one
         (nautilus_window_create_and_init_slot, nautilus-window.c:406): create a
         NautilusWindowSlot directly and hand it to AdwTabView, rather than firing
         the "new-tab" action (the Ctrl+T path) and polling for the resulting slot.
@@ -1645,8 +1653,6 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         (adw_tab_view_add_page never selects); selecting happens only in
         set_active_slot, which we skip here when make_active is False.
         """
-        uri = nav_uri
-
         tab_view = next(
             (w for w in _all_widgets(win) if isinstance(w, Adw.TabView)),
             None,
@@ -1720,7 +1726,9 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         own CLI flag rather than an in-process action, so it needs no
         Nautilus-version gating - "--new-window" has been stable since long
         before the 46/47 open-location action migration."""
-        subprocess.Popen(["nautilus", "--new-window", mountpoint])
+        resolve_open_uri(
+            mountpoint, lambda uri: subprocess.Popen(["nautilus", "--new-window", uri])
+        )
 
     def _do_properties(self, nav_uri: str, win: Gtk.Window) -> None:
         uri = nav_uri

@@ -2519,7 +2519,7 @@ def _activate_card(ext, card: Gtk.Box, win: Gtk.Window) -> None:
     if isinstance(card, MyComputerDiskCard) and not card.model.is_mounted:
         _do_mount(ext, card.model, win)
         return
-    GLib.idle_add(ext._navigate_to, card.nav_uri, win)
+    ext._do_open(card.nav_uri, win)
 
 
 def _on_card_pressed(
