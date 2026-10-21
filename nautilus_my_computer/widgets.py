@@ -211,6 +211,7 @@ from nautilus_my_computer.common import (
     _nautilus_list_icon_size,
     _resolve_custom_gicon,
     _set_regular_icon,
+    admin_backend_available,
 )
 from nautilus_my_computer.components import set_row_drop_active
 
@@ -1184,6 +1185,8 @@ class _ColumnRowItem(GObject.Object):
         is_hidden: bool = False,
         content_type: str | None = None,
         mtime: int = 0,
+        can_read: bool = True,
+        can_execute: bool = True,
     ) -> None:
         super().__init__()
         self.uri = uri
@@ -1193,7 +1196,17 @@ class _ColumnRowItem(GObject.Object):
         self.is_hidden = is_hidden
         self.content_type = content_type
         self.mtime = mtime
+        self.can_read = can_read
+        self.can_execute = can_execute
         self.is_cut = False
+
+    @property
+    def open_uri(self) -> str:
+        """Where a deliberate open of this row navigates: admin:// for a local
+        folder the user can't read or enter (issue #187), uri otherwise."""
+        if not self.is_dir or not admin_backend_available():
+            return self.uri
+        return uri_utils.admin_uri_if_needed(self.uri, self.can_read, self.can_execute)
 
 
 def _droppable_uris(uris: list[str], destination_uri: str, *, is_move: bool) -> list[str]:
@@ -1375,6 +1388,10 @@ class MyComputerColumnRow(Gtk.Box):
     @property
     def is_dir(self) -> bool:
         return bool(self.item is not None and self.item.is_dir)
+
+    @property
+    def open_uri(self) -> str | None:
+        return self.item.open_uri if self.item is not None else None
 
     @property
     def display_name(self) -> str | None:
@@ -1669,6 +1686,14 @@ class _ColumnEntry:
     mtime: int
     btime: int
     atime: int
+    can_read: bool
+    can_execute: bool
+
+
+def _access_allowed(info: Gio.FileInfo, attribute: str) -> bool:
+    """An access:: flag, True when the backend doesn't report it: only a flag
+    that is really false may send an open to admin://."""
+    return not info.has_attribute(attribute) or info.get_attribute_boolean(attribute)
 
 
 def _name_tiebreak(e: _ColumnEntry) -> tuple:
@@ -2418,7 +2443,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
             "standard::name,standard::display-name,standard::icon,"
             "standard::is-hidden,standard::is-backup,standard::type,standard::content-type,"
             "standard::size,time::modified,time::created,time::access,"
-            "metadata::custom-icon,metadata::custom-icon-name",
+            "metadata::custom-icon,metadata::custom-icon-name,"
+            "access::can-read,access::can-execute",
             Gio.FileQueryInfoFlags.NONE,
             GLib.PRIORITY_DEFAULT,
             self._cancellable,
@@ -2591,6 +2617,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
                     mtime=info.get_attribute_uint64("time::modified"),
                     btime=info.get_attribute_uint64("time::created"),
                     atime=info.get_attribute_uint64("time::access"),
+                    can_read=_access_allowed(info, "access::can-read"),
+                    can_execute=_access_allowed(info, "access::can-execute"),
                 )
             )
 
@@ -2623,6 +2651,8 @@ class MyComputerColumn(Gtk.ScrolledWindow):
                 entry.is_hidden,
                 content_type=entry.content_type,
                 mtime=entry.mtime,
+                can_read=entry.can_read,
+                can_execute=entry.can_execute,
             )
             for entry in entries
         ]

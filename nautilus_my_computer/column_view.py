@@ -1602,6 +1602,13 @@ class _ColumnViewHost:
         # The trailing preview width is derived from PREVIEW_WIDTH plus any
         # available viewport slack, so it is not tracked per-instance.
         index = self.columns.index(column)
+        open_uri = row.open_uri if row.is_dir else row.uri
+        if open_uri != row.uri:
+            # A folder only admin:// can open (issue #187). Hovering a drag
+            # over it never asks for a password.
+            if not dnd_hover:
+                self._open_locked_folder(index, open_uri, restore_keyboard_focus)
+            return
         if dnd_hover:
             self._begin_dnd_hover(index)
         # Read before any mutation below (self.focused_index still holds the
@@ -1735,6 +1742,15 @@ class _ColumnViewHost:
             # appended after it.
             if not self._column_fully_visible(index):
                 self._align_to_viewport_start(column)
+
+    def _open_locked_folder(self, index: int, admin_uri: str, restore_keyboard_focus: bool) -> None:
+        """Open a folder through admin:// the way Grid/List does: the chain
+        stops at its column, and only the slot is sent to admin_uri. No column
+        is built for it here, a file:// one would list nothing. gvfs and polkit
+        ask for the password, and the slot location changes only once that
+        succeeds; sync_to_uri then moves the whole chain to admin://."""
+        self._truncate_chain_to(index)
+        self._sync_slot_location(admin_uri, restore_keyboard_focus=restore_keyboard_focus)
 
     def _sync_slot_location(self, uri: str, *, restore_keyboard_focus: bool = False) -> None:
         """Push the Miller chain's new deepest folder to Nautilus's real slot
