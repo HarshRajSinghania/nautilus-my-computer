@@ -88,6 +88,10 @@ _SLOT_STACK_CHILD_NAME = "mc-column"
 _SLOT_INIT_RETRY_MS = 20  # retry interval while waiting for a new slot to settle
 _SLOT_INIT_MAX_ATTEMPTS = 100  # ~2s budget, mirrors main.py's _WIN_INIT_MAX_ATTEMPTS
 
+# The same local path under either scheme (issue #187): the chain swaps one
+# root for the other when the slot location moves between them.
+_PATH_SCHEME_ROOTS = {"file": "file:///", "admin": "admin:///"}
+
 # Whether a navigation event moves into a subfolder of where browsing
 # currently is (NAV_DOWN), back toward a parent (NAV_UP), or re-selects
 # within the same column that was already focused (NAV_SELF). Detected from
@@ -1827,6 +1831,7 @@ class _ColumnViewHost:
                 # A different external navigation superseded the keyboard
                 # drill before its echo arrived.
                 self._pending_focus_uri = None
+        self._follow_slot_scheme(target)
         existing = [Gio.File.new_for_uri(c.folder_uri) for c in self.columns]
 
         idx = next((i for i, f in enumerate(existing) if f.equal(target)), None)
@@ -1851,6 +1856,34 @@ class _ColumnViewHost:
 
         _log("sync_to_uri: truncating to already-open ancestor")
         self._truncate_chain_to(idx)
+
+    def _follow_slot_scheme(self, target: Gio.File) -> None:
+        """Keep the chain on the slot location's scheme (issue #187). Grid/List
+        treat admin:// as a property of the whole location: once in, going up
+        or down stays in, until Nautilus itself goes back to file://. When the
+        slot switches between the two over a path the chain already shows (the
+        folder itself or its parent), every column moves to the other root and
+        lists again, keeping its selection. sync_to_uri's usual matching then
+        runs on the switched chain. Any other location is left to reset()."""
+        if not self.columns:
+            return
+        old_root = _PATH_SCHEME_ROOTS.get(GLib.uri_peek_scheme(self.columns[0].folder_uri))
+        new_root = _PATH_SCHEME_ROOTS.get(target.get_uri_scheme())
+        if old_root is None or new_root is None or old_root == new_root:
+            return
+        parent = target.get_parent()
+        moved = [
+            Gio.File.new_for_uri(uri_utils.rebase(c.folder_uri, old_root, new_root))
+            for c in self.columns
+        ]
+        if not any(f.equal(target) or (parent is not None and f.equal(parent)) for f in moved):
+            return
+        _log(f"sync_to_uri: switching chain from {old_root!r} to {new_root!r}")
+        for column in self.columns:
+            column.move_root(old_root, new_root)
+        if self.preview_column.file_uri:
+            self._set_preview(uri_utils.rebase(self.preview_column.file_uri, old_root, new_root))
+            self._rebuild_chain()
 
     def _cut_columns_after(self, index: int) -> list:
         """Drop every column deeper than index from self.columns, cancelling

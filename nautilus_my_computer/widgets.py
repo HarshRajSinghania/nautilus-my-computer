@@ -1928,6 +1928,15 @@ class ColumnSelection:
         else:
             self._apply(selection.reconcile(sel, self._ordered()))
 
+    def rebase(self, old: str, new: str) -> None:
+        """Carry the selection over to where its URIs moved. Called during a
+        reload, so end_reload projects it once the new listing is in."""
+        anchor = self._sel.anchor
+        self._sel = selection.Selection(
+            frozenset(uri_utils.rebase(uri, old, new) for uri in self._sel.uris),
+            uri_utils.rebase(anchor, old, new) if anchor is not None else None,
+        )
+
     def clear(self) -> None:
         self._apply(selection.clear(self._sel))
 
@@ -2424,6 +2433,14 @@ class MyComputerColumn(Gtk.ScrolledWindow):
         an early-return here when sort is unchanged would skip that too."""
         self._sort = sort
         self.reload()
+
+    def move_root(self, old_root: str, new_root: str) -> None:
+        """Show the same folder under another scheme root (file:/// and
+        admin:///, issue #187): rebase the location and the selection, then
+        list it again."""
+        self.folder_uri = uri_utils.rebase(self.folder_uri, old_root, new_root)
+        self.reload()
+        self._selection_state.rebase(old_root, new_root)
 
     def reload(self) -> None:
         """Re-enumerate this column's own folder in place (e.g. after the
