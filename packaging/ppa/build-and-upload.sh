@@ -21,7 +21,7 @@ set -euo pipefail
 # non-LTS Ubuntu releases only get ~9 months of support, so this list needs
 # revisiting every time a new series ships.
 PPA="ppa:yannmasoch/nautilus-my-computer"
-SERIES=(resolute stonking)
+SERIES=(resolute:26.04 stonking:26.10)
 GPG_KEYID="${GPG_KEYID:-48A4A06AF4B9B0ED031FCB75E0092153561F1DB8}"
 
 VERSION="${1:?usage: $0 <version> [--upload]}"
@@ -42,7 +42,7 @@ git -C "$REPO_ROOT" archive --format=tar.gz \
 tar -xzf "$BUILD_DIR/nautilus-my-computer_$VERSION.orig.tar.gz" -C "$BUILD_DIR"
 SRC_DIR="$BUILD_DIR/nautilus-my-computer-$VERSION"
 
-# Each series gets its own version, <deb-version>~<series>1 (e.g. 0.13.3-1~resolute1).
+# Each series gets its own version, <deb-version>~ubuntu<release>.1 (e.g. 0.13.3-1~ubuntu26.04.1).
 #
 # Only the orig tarball is shared between series.
 #
@@ -51,10 +51,12 @@ SRC_DIR="$BUILD_DIR/nautilus-my-computer-$VERSION"
 # doesn't also require editing this script.
 DEB_VERSION="$(dpkg-parsechangelog -l "$REPO_ROOT/packaging/ppa/debian/changelog" -S Version)"
 
-for series in "${SERIES[@]}"; do
-    echo "== packaging for $series =="
+for entry in "${SERIES[@]}"; do
+    series="${entry%%:*}"
+    release="${entry#*:}"
+    echo "== packaging for $series ($release) =="
 
-    series_version="${DEB_VERSION}~${series}1"
+    series_version="${DEB_VERSION}~ubuntu${release}.1"
     rm -rf "$SRC_DIR/debian"
     cp -r "$REPO_ROOT/packaging/ppa/debian" "$SRC_DIR/debian"
     (

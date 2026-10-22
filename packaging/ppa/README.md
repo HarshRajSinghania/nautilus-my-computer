@@ -24,7 +24,7 @@ packaging/ppa/build-and-upload.sh 0.11.2 --upload    # build and dput to the PPA
 ```
 
 This builds one source package per target series from a tarball of the current checked-out
-commit, each with a series-suffixed version (`0.13.3-1~resolute1`, `0.13.3-1~stonking1`).
+commit, each with a series-suffixed version (`0.13.3-1~ubuntu26.04.1`, `0.13.3-1~ubuntu26.10.1`).
 Launchpad rejects uploading a version that already exists in another series of the same PPA,
 so a single shared version only ever gets published to the first series (dput still succeeds;
 the rejection arrives by email). The `.orig.tar.gz` is created once and shared, since
