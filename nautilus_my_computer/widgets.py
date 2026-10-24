@@ -2628,7 +2628,13 @@ class MyComputerColumn(Gtk.ScrolledWindow):
                     name=name,
                     display_name=display_name,
                     icon=_resolve_custom_gicon(info) or info.get_icon(),
-                    content_type=info.get_content_type(),
+                    # GVfs backends can omit standard::content-type even when
+                    # requested; get_content_type() would log a GLib critical.
+                    content_type=(
+                        info.get_content_type()
+                        if info.has_attribute("standard::content-type")
+                        else None
+                    ),
                     is_hidden=is_hidden,
                     size=size,
                     mtime=info.get_attribute_uint64("time::modified"),
