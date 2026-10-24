@@ -3834,6 +3834,9 @@ def _sync_view_switcher(ext, win: Gtk.Window) -> None:
 
     column_available = ext._column_view_available_for_window(win)
     _set_segment_enabled(switcher, "column", column_available)
+    native_modes_available = ext._native_view_mode_available_at(ext._slot_location(win))
+    _set_segment_enabled(switcher, "grid", native_modes_available)
+    _set_segment_enabled(switcher, "list", native_modes_available)
 
     if column_available and is_active_slot_showing_column(ext, win):
         active = "column"

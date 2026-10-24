@@ -112,8 +112,13 @@ MILLER_VIEW_UNAVAILABLE_URIS = [
     "recent:///",
     "starred:///",
     "x-network-view:///",
+    "network:///",
     "trash:///",
 ]
+# Nautilus pins the Network overview to its own view and disables the
+# slot.files-view-mode(-toggle) actions there (nautilus-window-slot.c
+# sync_actions), so Grid/List cannot switch anything on these locations.
+NATIVE_VIEW_MODE_UNAVAILABLE_URIS = ["x-network-view:///", "network:///"]
 COMPUTER_LABEL = _native("Computer")
 COMPUTER_ICON = "computer-symbolic"  # icon used in sidebar and path bar
 MENU_ITEM_LABEL = _("My Computer Settings")
@@ -1149,6 +1154,11 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
     def _column_view_available_at(location: Gio.File | None) -> bool:
         """Whether Miller view can be used for a Nautilus slot location."""
         return location is None or location.get_uri() not in MILLER_VIEW_UNAVAILABLE_URIS
+
+    @staticmethod
+    def _native_view_mode_available_at(location: Gio.File | None) -> bool:
+        """Whether Nautilus lets the user pick Grid/List for a slot location."""
+        return location is None or location.get_uri() not in NATIVE_VIEW_MODE_UNAVAILABLE_URIS
 
     def _column_view_available_for_window(self, win: Gtk.Window) -> bool:
         return self._column_view_available_at(_active_slot_location(win))
