@@ -208,6 +208,11 @@ class NativeBridge:
         folder = self._pending.folder
         if folder is not None and not self.shows(folder):
             self._pending.drop()
+        # Do not keep Nautilus's view and model alive across a navigation: it
+        # replaces them itself, and a referenced leftover still receives the
+        # shared model's items-changed with no parent.
+        self._unhook()
+        self._view = None
 
 
 def _walk(widget):
