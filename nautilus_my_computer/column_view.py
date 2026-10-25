@@ -37,7 +37,7 @@ from nautilus_my_computer.context_menu import (
     open_section,
     properties_section,
 )
-from nautilus_my_computer.native_selection import NativeBridge
+from nautilus_my_computer.native_selection import NativeBridge, NativeModelBinding
 from nautilus_my_computer.widgets import (
     MyComputerColumn,
     MyComputerColumnRow,
@@ -315,61 +315,42 @@ class NativeCutStateObserver:
     remains responsible for decoding its private clipboard object; Miller only
     mirrors the resulting item properties that are already present in the
     covered native List/Grid view.
+
+    The model is this slot's own (from its NativeBridge) and is held weakly,
+    under the same ownership rule as the bridge (#198).
     """
 
-    def __init__(self, win: Gtk.Window, on_changed) -> None:
-        self._win = win
+    def __init__(self, find_model, on_changed) -> None:
+        self._find_model = find_model
         self._on_changed = on_changed
-        self._view = None
-        self._view_handler_id = 0
-        self._model = None
-        self._model_handler_id = 0
+        self._active = False
+        self._binding = NativeModelBinding(
+            "items-changed", self._on_items_changed, self._on_model_lost
+        )
+        # NautilusViewItem holds its cell widget weakly, so these refs pin no widget.
         self._item_handlers: list[tuple[GObject.Object, int]] = []
 
     def start(self) -> None:
         self.stop()
-        candidates = [
-            widget
-            for widget in _all_widgets(self._win)
-            if type(widget).__name__ in ("NautilusGridView", "NautilusListView")
-        ]
-        if not candidates:
-            self._on_changed(set())
-            return
-        self._view = next((view for view in candidates if view.get_mapped()), candidates[0])
-        try:
-            self._view_handler_id = self._view.connect("notify::model", self._on_model_changed)
-            model = self._view.get_property("model")
-        except (AttributeError, TypeError):
-            self.stop()
-            self._on_changed(set())
-            return
-        self._bind_model(model)
+        self._active = True
+        self._bind_model(self._find_model())
 
     def stop(self) -> None:
+        self._active = False
         self._disconnect_items()
-        if self._model is not None and self._model_handler_id:
-            self._model.disconnect(self._model_handler_id)
-        self._model = None
-        self._model_handler_id = 0
-        if self._view is not None and self._view_handler_id:
-            self._view.disconnect(self._view_handler_id)
-        self._view = None
-        self._view_handler_id = 0
+        self._binding.unbind()
 
-    def _on_model_changed(self, view, _pspec) -> None:
-        self._bind_model(view.get_property("model"))
+    def _on_model_lost(self) -> None:
+        self._disconnect_items()
+        if self._active:
+            self._bind_model(self._find_model())
 
     def _bind_model(self, model) -> None:
         self._disconnect_items()
-        if self._model is not None and self._model_handler_id:
-            self._model.disconnect(self._model_handler_id)
-        self._model = model
-        self._model_handler_id = 0
+        self._binding.bind(model)
         if model is None:
             self._on_changed(set())
             return
-        self._model_handler_id = model.connect("items-changed", self._on_items_changed)
         self._bind_items()
 
     def _on_items_changed(self, _model, _position, _removed, _added) -> None:
@@ -385,10 +366,11 @@ class NativeCutStateObserver:
 
     def _bind_items(self) -> None:
         self._disconnect_items()
-        if self._model is None:
+        model = self._binding.get()
+        if model is None:
             return
-        for index in range(self._model.get_n_items()):
-            tree_row = self._model.get_item(index)
+        for index in range(model.get_n_items()):
+            tree_row = model.get_item(index)
             item = tree_row.get_item() if isinstance(tree_row, Gtk.TreeListRow) else tree_row
             if item is None or item.find_property("is-cut") is None:
                 continue
@@ -438,7 +420,9 @@ class _ColumnViewHost:
         self._clipboard = win.get_clipboard()
         self._clipboard.connect("changed", self._on_clipboard_changed)
         self._operation_monitors: list[Gio.FileMonitor] = []
-        self._native_cut_observer = NativeCutStateObserver(win, self._apply_native_cut_uris)
+        self._native_cut_observer = NativeCutStateObserver(
+            self._native_bridge.model, self._apply_native_cut_uris
+        )
         self._sort = get_column_view_sort(ext)
         # Outermost paned of the chain, built by _rebuild_chain.
         self.root: Gtk.Widget | None = None
