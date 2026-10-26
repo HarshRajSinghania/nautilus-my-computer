@@ -191,11 +191,26 @@ def _disk_context_menu(ext, win, m) -> ContextMenu:
     if device_items:
         sections.append(ContextMenuSection(device_items))
 
-    # Section 2: properties (mounted disks only).
+    # Section 2: hide from the panel (never the root disk, it anchors the System group).
+    if m.mountpoint != "/":
+        sections.append(
+            ContextMenuSection([ContextMenuItem(_("Hide"), action=lambda: _do_hide_drive(ext, m))])
+        )
+
+    # Section 3: properties (mounted disks only).
     if is_mounted and nav_uri:
         sections.append(properties_section(lambda: ext._do_properties(nav_uri, win)))
 
     return ContextMenu(sections)
+
+
+def _do_hide_drive(ext, m) -> None:
+    """Add a drive to the hidden-drives setting; the settings handler repopulates."""
+    if not ext._gsettings:
+        return
+    hidden = dict(ext._gsettings.get_value("hidden-drives").unpack())
+    hidden[m.key] = m.display_name or m.key
+    ext._gsettings.set_value("hidden-drives", GLib.Variant("a{ss}", hidden))
 
 
 @dataclasses.dataclass
@@ -1857,8 +1872,11 @@ def _populate_slot(ext, slot, sort: tuple[str, bool] | None = None) -> None:
     # no visible effect on the panel at all. Nautilus's own computer:///
     # browsing filters on this exact flag, so match it here.
     show_hidden = ext._nautilus_prefs.hidden_files()
+    hidden_drives = ext._gsettings.get_value("hidden-drives").unpack() if ext._gsettings else {}
     for m in _disk_data.values():
         if m.is_hidden and not show_hidden:
+            continue
+        if m.key in hidden_drives:
             continue
         groups[_classify_mount(m)].add_item(m)
 

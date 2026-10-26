@@ -995,6 +995,8 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
         elif key == "show-system-partitions":
             # Needs a rescan because filtered mounts must be re-collected
             self._schedule_live_refresh()
+        elif key == "hidden-drives":
+            self._repopulate_visible()
         elif key.startswith("visibility-"):
             # Grouping change only -- no rescan needed, just re-render
             self._repopulate_visible()
@@ -1916,6 +1918,41 @@ class MyComputerExtension(GObject.GObject, Nautilus.MenuProvider):
             "show-system-partitions", show_sys_parts_row, "active", Gio.SettingsBindFlags.DEFAULT
         )
         vis_group.add(show_sys_parts_row)
+
+        hidden_group = Adw.PreferencesGroup()
+        hidden_group.set_title(_("Hidden drives"))
+        hidden_group.set_description(
+            _("Drives you manually hide from the Computer view will appear here.")
+        )
+        page_computer.add(hidden_group)
+        hidden_rows: list[Adw.ActionRow] = []
+
+        def _rebuild_hidden_rows(*_args):
+            for row in hidden_rows:
+                hidden_group.remove(row)
+            hidden_rows.clear()
+            hidden = self._gsettings.get_value("hidden-drives").unpack()
+            for key, name in hidden.items():
+                row = Adw.ActionRow()
+                row.set_title(GLib.markup_escape_text(name))
+                btn = Gtk.Button.new_from_icon_name("window-close-symbolic")
+                btn.add_css_class("flat")
+                btn.add_css_class("circular")
+                btn.set_valign(Gtk.Align.CENTER)
+
+                def _unhide(_b, _key=key):
+                    current = dict(self._gsettings.get_value("hidden-drives").unpack())
+                    current.pop(_key, None)
+                    self._gsettings.set_value("hidden-drives", GLib.Variant("a{ss}", current))
+
+                btn.connect("clicked", _unhide)
+                row.add_suffix(btn)
+                hidden_group.add(row)
+                hidden_rows.append(row)
+
+        _rebuild_hidden_rows()
+        _hidden_sig = self._gsettings.connect("changed::hidden-drives", _rebuild_hidden_rows)
+        pref_win.connect("closed", lambda _w: self._gsettings.disconnect(_hidden_sig))
 
         sidebar_vis_group = Adw.PreferencesGroup()
         sidebar_vis_group.set_title(_("Sidebar visibility"))
