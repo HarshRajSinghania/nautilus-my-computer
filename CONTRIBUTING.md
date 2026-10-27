@@ -33,7 +33,10 @@ project page.
 ## Code contributions
 
 1. Open an issue first for anything beyond a small fix, so we can agree on the approach.
-2. Keep the single-file structure (`nautilus-my-computer.py`), don't split it into modules.
+2. Follow the existing layout: `nautilus-my-computer.py` is only a thin entry shim, and the code
+   lives in the `nautilus_my_computer/` package, one module per Nautilus surface it reads from or
+   injects into. Don't add new top-level `*.py` files next to the entry point, Nautilus loads every
+   one of them as a possible extension.
 3. Run before committing:
    ```bash
    ruff format
@@ -42,7 +45,9 @@ project page.
 4. Test your change against a real Nautilus session:
    ```bash
    cp nautilus-my-computer.py ~/.local/share/nautilus-python/extensions/
+   cp -r nautilus_my_computer ~/.local/share/nautilus-python/extensions/
    rm -rf ~/.local/share/nautilus-python/extensions/__pycache__
+   rm -rf ~/.local/share/nautilus-python/extensions/nautilus_my_computer/__pycache__
    nautilus -q; sleep 1 && nautilus
    ```
 5. Commit messages follow `<type>: <short description>` (e.g. `fix: ...`, `feat: ...`,
@@ -50,14 +55,15 @@ project page.
 
 ## Reporting bugs
 
-Open an issue with:
-- Nautilus version and GNOME version
-- Steps to reproduce, if you can
-- Relevant log lines, with debug logging enabled:
-  ```bash
-  DEBUG=1 DISPLAY=:0 nohup nautilus --no-desktop > /tmp/nautilus.log 2>&1 &
-  ```
-  then grep for `MyComputer:` in `/tmp/nautilus.log`
+Use the [bug report form](https://github.com/yannmasoch/nautilus-my-computer/issues/new?template=bug_report.yml),
+it asks for everything needed to reproduce the problem. If Nautilus crashes, attach the debug log:
+```bash
+nautilus -q; sleep 1 && DEBUG=1 nautilus > /tmp/nautilus.log 2>&1
+grep "MyComputer:" /tmp/nautilus.log
+```
+
+For feature ideas, use the
+[feature request form](https://github.com/yannmasoch/nautilus-my-computer/issues/new?template=feature_request.yml).
 
 ## License
 
