@@ -71,6 +71,10 @@ grep "MyComputer:" /tmp/nautilus.log
 For feature ideas, use the
 [feature request form](https://github.com/yannmasoch/nautilus-my-computer/issues/new?template=feature_request.yml).
 
+## Code of conduct
+
+Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
 By contributing, you agree your contribution is licensed under this project's MIT license.
