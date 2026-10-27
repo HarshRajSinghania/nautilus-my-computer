@@ -32,7 +32,9 @@ project page.
 
 ## Code contributions
 
-1. Open an issue first for anything beyond a small fix, so we can agree on the approach.
+1. For bigger changes, open an issue or a draft pull request early, so we can agree on the
+   approach. This extension is community driven: opening early lets others join in, share
+   feedback, test, or suggest a better solution before the work is done.
 2. Follow the existing layout: `nautilus-my-computer.py` is only a thin entry shim, and the code
    lives in the `nautilus_my_computer/` package, one module per Nautilus surface it reads from or
    injects into. Don't add new top-level `*.py` files next to the entry point, Nautilus loads every
@@ -50,8 +52,12 @@ project page.
    rm -rf ~/.local/share/nautilus-python/extensions/nautilus_my_computer/__pycache__
    nautilus -q; sleep 1 && nautilus
    ```
-5. Commit messages follow `<type>: <short description>` (e.g. `fix: ...`, `feat: ...`,
-   `i18n: ...`, `l10n: ...`), imperative mood, max 72 characters.
+5. Commit messages follow `<type>: <short description> (#<PR>)` (e.g. `fix: ...`, `feat: ...`,
+   `i18n: ...`, `l10n: ...`), imperative mood, max 72 characters including the suffix. Each
+   commit ends with the number of your pull request, e.g. `fix: guard missing content-type (#198)`.
+   You only get that number once the pull request is open, so amend or reword your commits
+   afterwards and force-push. Keep one logical change per commit, pull requests are not
+   squashed. Checks run automatically and tell you which number to use.
 
 ## Reporting bugs
 
